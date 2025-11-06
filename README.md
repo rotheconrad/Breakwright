@@ -248,9 +248,3 @@ project/
 └── final/
     └── soy.corrected.fa
 ```
-
----
-
-**Maintainer:** Roth Conrad  
-**Contact:** hello@earbonez.com  
-**License:** MIT
