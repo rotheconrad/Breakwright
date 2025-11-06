@@ -136,19 +136,32 @@ python contig_filter_by_paf.py   --assembly_fa assembly.fa   --contigs_vs_ref_pa
 
 This step is used to confirm breakpoints and support manual curation.
 
-#### 🧠 Overview
-`paf_breakfinder.py` scans a **PAF** file of **contigs → reference** alignments to identify **candidate misassembly breakpoints**.
-It looks for hallmarks such as **reference chromosome switches**, **strand flips**, **large intrachromosomal jumps**, and **large internal gaps on the contig** between adjacent alignment blocks.
-
 ```bash
 minimap2 -x map-hifi -t 32 -a soy.kept.fa hifi_reads.fastq.gz > reads_vs_contigs.sam
 samtools view -bS reads_vs_contigs.sam | samtools sort -o reads_vs_contigs.bam
 samtools index reads_vs_contigs.bam
 ```
+---
+
+## 🔧 Step 4. Identify candidate breaks with `paf_breakfinder.py`
+
+This script parses the PAF of contigs aligned to the reference to detect structural inconsistencies (e.g., multi-chromosome mappings, inversions, large internal gaps).
+
+#### 🧠 Overview
+`paf_breakfinder.py` scans a **PAF** file of **contigs → reference** alignments to identify **candidate misassembly breakpoints**.
+It detects hallmark patterns such as **reference chromosome switches**, **strand flips**, **large intrachromosomal jumps**, and **large internal gaps on the contig**.
+It also flags **micro-overlaps**, **identity drops**, **edge low-MAPQ blocks**, and **unmapped leading/trailing contig tails**.
+
+```bash
+python paf_breakfinder.py \
+  --paf contigs_vs_ref.paf \
+  --outprefix breaks/soy
+```
+
 #### 💻 Example
 
 ```bash
-python paf_breakfinder.py   --paf contigs_vs_ref.paf   --outprefix breaks/soy   --min_mapq 20   --min_aln_len 5000   --min_identity 0.9   --min_qgap 10000   --min_tjump 100000   --allow_overlap 1000   --max_merge_dist 10000
+python paf_breakfinder.py   --paf contigs_vs_ref.paf   --outprefix breaks/soy   --min_mapq 20 --min_aln_len 5000 --min_identity 0.9   --min_qgap 10000 --min_tjump 100000 --allow_overlap 1000   --max_micro_overlap 5000 --identity_drop 0.10 --low_mapq_edge 30   --min_tail_unmapped 20000 --max_merge_dist 10000
 ```
 
 #### 📤 Outputs
@@ -156,7 +169,7 @@ python paf_breakfinder.py   --paf contigs_vs_ref.paf   --outprefix breaks/soy   
 | Output | Description |
 |---|---|
 | `<outprefix>_breaks.tsv` | Candidate breakpoints with columns: `qname, cut, reason, qlen, qbeg, qend, tname1, tpos1, tname2, tpos2`. |
-| `<outprefix>_summary.tsv` | Per-contig summary of counts by reason (e.g., `switch_chr`, `strand_flip`, `large_tjump`, `large_qgap`). |
+| `<outprefix>_summary.tsv` | Per-contig summary of counts by reason (`switch_chr`, `strand_flip`, `large_tjump`, `large_qgap`, `micro_overlap`, `identity_drop`, `low_mapq_edge`, `unmapped_lead`, `unmapped_tail`). |
 | `<outprefix>_blocks.tsv` | *(optional; if `--emit_all_blocks`)* Filtered alignment blocks retained after thresholds. |
 
 #### ⚙️ Required Arguments
@@ -173,41 +186,33 @@ python paf_breakfinder.py   --paf contigs_vs_ref.paf   --outprefix breaks/soy   
 | `--min_mapq` | `20` | Minimum MAPQ to accept a PAF alignment block. |
 | `--min_aln_len` | `5000` | Minimum alignment length (bp); shorter blocks are ignored. |
 | `--min_identity` | `0.90` | Minimum identity (nmatch/alen) to retain an alignment block. |
-| `--min_qgap` | `10000` | Minimum **contig gap** (bp) between adjacent blocks to flag a candidate break. |
-| `--min_tjump` | `100000` | Minimum **reference jump** (bp) across adjacent blocks on same chromosome to flag a candidate break. |
-| `--allow_overlap` | `1000` | Allow up to this many bp of query overlap between adjacent blocks when evaluating gaps (tolerates small overlaps). |
-| `--require_ordered` | `True` | If set (default), only consider adjacent blocks in ascending query order for breakpoint inference. |
+| `--min_qgap` | `10000` | Minimum **contig gap** (bp) between adjacent blocks to flag a candidate break (`large_qgap`). |
+| `--min_tjump` | `100000` | Minimum **reference jump** (bp) across adjacent blocks on same chromosome to flag (`large_tjump`). |
+| `--allow_overlap` | `1000` | Allow up to this many bp of query overlap between adjacent blocks when evaluating gaps. |
+| `--require_ordered` | `True` | If set, only consider adjacency in ascending query order for breakpoint inference. |
 | `--max_merge_dist` | `10000` | Merge nearby breakpoints on the same contig if within this many bp into a single candidate. |
 | `--emit_all_blocks` | `False` | If set, also emits a TSV with all filtered alignment blocks for QC. |
+| **New:** `--max_micro_overlap` | `5000` | Flag `micro_overlap` if adjacent blocks overlap by **(allow_overlap, max_micro_overlap]** bp. |
+| **New:** `--identity_drop` | `0.10` | Flag `identity_drop` if identity decreases by ≥ this fraction between adjacent blocks (e.g., 0.10 = 10%). |
+| **New:** `--low_mapq_edge` | `30` | Flag `low_mapq_edge` if either adjacent block has MAPQ ≤ this value (even if ≥ `--min_mapq`). |
+| **New:** `--min_tail_unmapped` | `20000` | Flag `unmapped_lead` / `unmapped_tail` if leading/trailing unmapped contig tails exceed this many bp. |
 
 #### 🔍 Detection Heuristics (adjacent blocks on the same contig)
-- **Reference switch (`switch_chr`)**: consecutive blocks map to **different reference chromosomes**.  
-- **Strand flip (`strand_flip`)**: strand changes between adjacent blocks on the same chromosome.  
-- **Large reference jump (`large_tjump`)**: same chromosome but reference positions jump by `≥ --min_tjump`.  
-- **Large contig gap (`large_qgap`)**: gap between query end of one block and query start of the next exceeds `≥ --min_qgap` (after allowing small overlap).
+- **switch_chr** — consecutive blocks map to **different reference chromosomes**.  
+- **strand_flip** — strand changes between adjacent blocks on the same chromosome.  
+- **large_tjump** — same chromosome but reference midpoints jump by `≥ --min_tjump`.  
+- **large_qgap** — contig gap (`next.qstart - prev.qend`) ≥ `--min_qgap` after allowing `--allow_overlap`.  
+- **micro_overlap** — query overlap **in (allow_overlap, max_micro_overlap]** bp (suspicious micro-overlap).  
+- **identity_drop** — drop in identity (prev.ident - next.ident) ≥ `--identity_drop`.  
+- **low_mapq_edge** — either block has MAPQ ≤ `--low_mapq_edge` (despite passing `--min_mapq`).  
+- **unmapped_lead / unmapped_tail** — leading (`first.qstart`) or trailing (`qlen - last.qend`) unmapped contig tails ≥ `--min_tail_unmapped`.
 
-> Heuristics are conservative defaults; tune thresholds for your organism and assembly characteristics.
+> Heuristics are conservative defaults; tune for organism and assembly specifics.
 
 #### 🧠 Notes
-- The script sorts blocks per contig by **query start** to infer adjacency in the assembled sequence.  
-- Break candidates within `--max_merge_dist` are merged to reduce redundancy.  
-- Outputs are intended to feed **Breakwright** steps like `break_viz_plus.py` and manual curation before `split_breaks.py`.
-
----
-
-## 🔧 Step 4. Identify candidate breaks with `paf_breakfinder.py`
-
-This script parses the PAF of contigs aligned to the reference to detect structural inconsistencies (e.g., multi-chromosome mappings, inversions, large internal gaps).
-
-```bash
-python paf_breakfinder.py \
-  --paf contigs_vs_ref.paf \
-  --outprefix breaks/soy
-```
-
-**Outputs:**
-- `soy_breaks.tsv` — candidate break positions
-- `soy_breaks_summary.tsv` — statistics and confidence scoring
+- Blocks are sorted per contig by **query start** to infer adjacency.  
+- Multiple reasons may be concatenated for a merged breakpoint window.  
+- Use together with read support (HiFi mappings) and visualization for final curation.
 
 ---
 
