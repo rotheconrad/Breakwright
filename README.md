@@ -137,7 +137,7 @@ python contig_filter_by_paf.py   --assembly_fa assembly.fa   --contigs_vs_ref_pa
 This step is used to confirm breakpoints and support manual curation.
 
 ```bash
-minimap2 -x map-hifi -t 32 -a soy.kept.fa hifi_reads.fastq.gz > reads_vs_contigs.sam
+minimap2 -ax map-hifi -t 32 soy.kept.fa hifi_reads.fastq.gz > reads_vs_contigs.sam
 samtools view -bS reads_vs_contigs.sam | samtools sort -o reads_vs_contigs.bam
 samtools index reads_vs_contigs.bam
 ```
@@ -220,6 +220,11 @@ python paf_breakfinder.py   --paf contigs_vs_ref.paf   --outprefix breaks/soy   
 
 Generates clear, publication-ready images showing alignment structure and supporting read coverage across candidate breaks.
 
+#### 🧠 Overview
+`break_viz_plus.py` produces **publication-ready panels** to visually confirm candidate misassembly breakpoints.
+Given a **PAF** of contigs→reference, a **BAM** of HiFi reads mapped to contigs, and a TSV of curated or predicted **breaks**,
+it renders per-break figures showing **local contig alignment structure** and **read support** around the cut site.
+
 ```bash
 python break_viz_plus.py \
   --paf contigs_vs_ref.paf \
@@ -228,14 +233,158 @@ python break_viz_plus.py \
   --outdir break_viz
 ```
 
-**Outputs:**
-- `break_viz/*.pdf` and `.png` — visual confirmation plots
+#### 💻 Example
+
+```bash
+python break_viz_plus.py   --paf contigs_vs_ref.paf   --bam reads_vs_contigs.bam   --breaks breaks/soy_breaks.tsv   --outdir break_viz   --win 50000   --paf_min_mapq 20 --paf_min_aln 5000 --paf_min_id 0.9   --min_mapq 0 --export_pdf --export_png --label_coords --label_reason   --telomere_motif TTTAGGG --motif_min_run 5
+```
+
+#### 📤 Outputs
+
+For each break (row in `--breaks`), the script writes one or two files (depending on flags):
+- `<outdir>/<qname>_<cut>.pdf` (if `--export_pdf`)  
+- `<outdir>/<qname>_<cut>.png` (if `--export_png`)
+
+Each figure shows:
+- **Top overlay:** PAF block spans across the window, relative to query coordinates (contig).  
+- **Bottom plot:** Smoothed **read coverage** across the same window.  
+- Vertical line at the **cut** position; optional labels, motif marks.
+
+#### ⚙️ Required Arguments
+
+| Argument | Type | Description |
+|---|---|---|
+| `--paf` | *string (path)* | **Required.** PAF file from `minimap2 -x asm5 ref.fa contigs.fa` (contigs→reference). |
+| `--bam` | *string (path)* | **Required.** BAM of HiFi reads mapped to the contigs (e.g., `minimap2 -x map-hifi`). Must be indexed (`.bai`). |
+| `--breaks` | *string (path)* | **Required.** TSV of break candidates (e.g., from `paf_breakfinder.py`), with columns: `qname, cut` (plus optional metadata). |
+| `--outdir` | *string (path)* | **Required.** Output directory for figures. |
+
+#### 🧩 Optional Arguments (with Defaults)
+
+| Argument | Default | Description |
+|---|---|---|
+| `--win` | `50000` | Window size (bp) on each side of the cut to display (total span = 2×win). |
+| `--min_mapq` | `0` | Minimum MAPQ for reads to count toward coverage. |
+| `--max_reads` | `1000000` | Upper bound on reads to consider when computing coverage (for performance safety). |
+| `--paf_min_mapq` | `20` | Minimum MAPQ to include a PAF alignment block in the overlay. |
+| `--paf_min_aln` | `5000` | Minimum PAF block length to display. |
+| `--paf_min_id` | `0.90` | Minimum identity for a PAF block to display. |
+| `--dpi` | `300` | Figure DPI for PNG export. |
+| `--font_size` | `10` | Base font size (axis labels, tick labels). |
+| `--export_pdf` | Flag | If set, export a PDF per breakpoint. |
+| `--export_png` | Flag | If set, export a PNG per breakpoint. |
+| `--label_coords` | Flag | If set, plot coordinate ticks and label the cut site. |
+| `--label_reason` | Flag | If set, annotate the figure title with the break reason(s) if present in the TSV. |
+| `--telomere_motif` | `TTTAGGG` | Repeat motif to annotate (optional; soybean default). |
+| `--motif_min_run` | `5` | Minimum number of consecutive motif repeats to annotate. |
+| `--region_list` | *none* | Optional TSV listing `qname,cut,win` to override per-break window size. |
+| `--limit` | *none* | Limit number of breaks to render (for testing). |
+
+#### 🧠 Notes
+- Ensure `--bam` is coordinate-sorted and indexed (`.bai`).  
+- For large BAMs, consider downsampling or providing a `--region_list` to focus on selected breaks.  
+- Figures are rendered with **matplotlib** (single axis per figure; default color cycle). 
 
 ---
 
-## ✂️ Step 6. Split contigs with `split_breaks.py`
+## 📊 Step 6. Visualize breakpoints with `break_dotplot.py`
+
+This complements `break_viz_plus.py` by giving a macroscopic alignment view.
+
+#### 🧠 Overview
+`break_dotplot.py` renders **dotplot-style figures** from **PAF** (contigs→reference):
+- **Full-genome dotplot** — concatenates reference chromosomes on the X-axis.
+- **Per-chromosome dotplots** — one figure per reference chromosome.
+- **Break markers** — plots **red “×”** markers at candidate break coordinates projected onto the dotplot.
+
+```bash
+python break_dotplot.py \
+  --
+  --
+```
+
+#### 💻 Examples
+
+Full genome + per-chromosome with breaks:
+```bash
+python break_dotplot.py   --paf contigs_vs_ref.paf   --breaks breaks/soy_breaks.tsv   --outdir dotplots   --mode full,per-chr   --paf_min_mapq 20 --paf_min_aln 5000 --paf_min_id 0.9   --draw_chr_ticks --export_pdf --export_png
+```
+
+#### 📤 Outputs
+
+- **Full genome:** `<outdir>/dotplot_full.pdf/.png`  
+- **Per-chromosome:** `<outdir>/dotplot_<tname>.pdf/.png`
+
+Each figure shows PAF block segments: **x = reference coordinate**, **y = contig coordinate**.  
+If `--breaks` is provided, per-break **red “×”** markers are drawn at projected positions.
+
+#### ⚙️ Required Arguments
+
+| Argument | Type | Description |
+|---|---|---|
+| `--paf` | *string (path)* | **Required.** PAF from `minimap2 -x asm5 ref.fa contigs.fa` (contigs→reference). |
+
+#### 🧩 Optional Arguments (with Defaults)
+
+| Argument | Default | Description |
+|---|---|---|
+| `--breaks` | *none* | Optional TSV with columns `qname,cut` (and optionally `reason`). Used to plot **red ×** markers. |
+| `--outdir` | `dotplots` | Output directory for figures. |
+| `--mode` | `full,per-chr` | Which plots to produce: `full`, `per-chr`, or `full,per-chr`. |
+| `--win_for_break_proj` | `200000` | When projecting breaks, search ±win on contig to find the adjacent PAF blocks. |
+| `--paf_min_mapq` | `20` | Minimum PAF MAPQ to include a block. |
+| `--paf_min_aln` | `5000` | Minimum PAF alignment length to include (bp). |
+| `--paf_min_id` | `0.90` | Minimum identity (nmatch/alen) to include. |
+| `--max_blocks` | `1000000` | Max blocks to render for the **full-genome** plot (subsample beyond). |
+| `--max_blocks_chr` | `200000` | Max blocks to render for **per-chromosome** plots. |
+| `--ref_order` | *none* | Optional text file listing reference chromosome names (one per line) to define X-axis order. Defaults to natural-sorted names found in PAF. |
+| `--draw_chr_ticks` | Flag | If set, draws vertical ticks at chromosome boundaries on the full-genome plot. |
+| `--dpi` | `300` | DPI for PNG export. |
+| `--export_pdf` | Flag | Export PDF figure(s). |
+| `--export_png` | Flag | Export PNG figure(s). |
+| `--label_reason` | Flag | Include `reason` in the legend/title if present in breaks. |
+| `--limit_chroms` | *none* | Limit number of reference chromosomes (for quick tests). |
+
+#### 🔬 Break Projection Details
+For each break (`qname,cut`):
+1. Find adjacent PAF blocks on that contig around `cut` (within `±win_for_break_proj`).  
+2. If two blocks straddle the cut: mark **two red ×** at the **end of the left block** and **start of the right block** in dotplot space.  
+3. If only one block is found: mark a single × at the **nearest end** of that block to the `cut`.  
+4. On the **full-genome** plot, reference **x** is offset by cumulative chromosome lengths (concatenation).
+
+#### 💻 Examples
+
+Full genome + per-chromosome with breaks:
+```bash
+python break_dotplot.py   --paf contigs_vs_ref.paf   --breaks breaks/soy_breaks.tsv   --outdir dotplots   --mode full,per-chr   --paf_min_mapq 20 --paf_min_aln 5000 --paf_min_id 0.9   --draw_chr_ticks --export_pdf --export_png
+```
+
+Per-chromosome only, natural order:
+```bash
+python break_dotplot.py   --paf contigs_vs_ref.paf   --outdir dotplots   --mode per-chr --export_png
+```
+
+Custom reference order:
+```bash
+python break_dotplot.py   --paf contigs_vs_ref.paf   --breaks breaks/soy_breaks.tsv   --ref_order ref_order.txt   --mode full --export_pdf --export_png
+```
+
+#### 🧠 Notes
+- Large assemblies can contain millions of blocks; performance guards (`--max_blocks*`) subsample beyond thresholds.  
+- The PAF field `tlen` (column 7) is used to estimate chromosome lengths for offsetting.  
+- If a break contig has no nearby blocks, it cannot be projected and is skipped with a warning. 
+
+## ✂️ Step 7. Split contigs with `split_breaks.py`
 
 Finally, manually curated breakpoints can be applied to generate a corrected assembly.
+
+#### 🧠 Overview
+`split_breaks.py` applies **curated breakpoints** to an assembly FASTA and writes a **corrected FASTA**.
+It preserves original contig names by default and only appends suffixes (`a`, `b`, `c`, …) to contigs that are **actually split**.
+
+- Accepts break coordinates from **PAF context** (default: `--cut_coord paf`) where `cut` is an index between bases
+  (e.g., using `qend` from PAF, 0-based, end-exclusive), or **1-based** cuts (`--cut_coord one-based`).  
+- Drops or keeps very small fragments according to a length threshold.
 
 ```bash
 python split_breaks.py \
@@ -244,10 +393,47 @@ python split_breaks.py \
   --out_fa soy.corrected.fa
 ```
 
+#### 💻 Examples
+
+##### PAF-style cuts (default)
+```bash
+python split_breaks.py   --assembly_fa soy.kept.fa   --breaks_tsv curated_breaks.tsv   --out_fa soy.corrected.fa   --cut_coord paf   --min_fragment_len 1000
+```
+
+##### 1-based cuts, drop tiny fragments
+```bash
+python split_breaks.py   --assembly_fa soy.kept.fa   --breaks_tsv curated_breaks.tsv   --out_fa soy.corrected.fa   --cut_coord one-based   --min_fragment_len 5000   --min_gap_between_cuts 100
+```
+
 **Behavior:**
 - Default: preserves original contig names  
 - Contigs with breaks get suffixes (`a`, `b`, `c`, …)  
 - Writes mapping tables (`.map.tsv`) and optionally drops very short fragments.
+
+#### ⚙️ Required Arguments
+
+| Argument | Type | Description |
+|---|---|---|
+| `--assembly_fa` | *string (path)* | **Required.** Input assembly FASTA (supports `.gz`). |
+| `--breaks_tsv` | *string (path)* | **Required.** TSV of curated breakpoints with columns including `qname` and `cut`. Other columns are ignored. |
+| `--out_fa` | *string (path)* | **Required.** Output FASTA for the split assembly. |
+
+#### 🧩 Optional Arguments (with Defaults)
+
+| Argument | Default | Description |
+|---|---|---|
+| `--cut_coord` | `paf` | Coordinate convention for `cut`. Options: `paf` (0-based index like PAF `qend`) or `one-based`. |
+| `--min_fragment_len` | `1000` | Drop fragments shorter than this many bp. Set `0` to keep everything. |
+| `--min_gap_between_cuts` | `50` | Ignore multiple cuts closer than this many bp (de-duplicate noisy cuts). |
+| `--suffix_style` | `letters` | Suffix style for split fragments: `letters` → `a,b,c,...` (default), or `num` → `.1,.2,.3`. |
+| `--wrap` | `60` | FASTA line wrap width. |
+| `--report_prefix` | `<out_fa basename>` | Prefix for sidecar reports. If not given, derived from `--out_fa`. |
+| `--gzip_out` | `False` | If set, write `--out_fa` as gzip (`.gz`). |
+
+#### 🔍 Notes
+- Breaks outside `[0, len]` or violating `--min_gap_between_cuts` are recorded in `*.skipped.tsv` and ignored.  
+- Fragment coordinates reported in `.map.tsv` are **0-based, end-exclusive** `[start, end)` for clarity and easy interval math.  
+- To **retain all fragments**, set `--min_fragment_len 0`.
 
 ---
 
