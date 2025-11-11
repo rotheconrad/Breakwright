@@ -10,13 +10,51 @@ The pipeline filters low-value contigs, identifies potential misjoins (e.g., fus
 
 This pipeline performs:
 
-1. **Contig filtering** — remove short, redundant, or unmapped contigs based on reference alignment coverage.  
-2. **Reference-guided comparison** — align contigs to the reference genome with `minimap2` or `nucmer`.  
-3. **Breakpoint detection** — identify possible chimeric joins using PAF-based inspection (`paf_breakfinder.py`).  
-4. **Breakpoint visualization** — plot local alignment structure and supporting read coverage (`break_viz_plus.py`).  
-5. **Assembly correction** — split contigs at curated breakpoints (`split_breaks.py`).  
+1. **Genome Assembly** - Assemble PacBio HiFi reads with HiFiASM. *note: this pipeline can be used for other genome assemblies as well but you may have to skip the gfa step*
+```bash
+```
+1. **Contig to reference alignment** - align assembled contigs to reference genome using minimap2 for PAF output file. Used to find proposed break points
+```bash
+minimap2 -x asm5 ref.fa assembly.fa > contigs_vs_ref.paf
+```
+1. **Contig filtering** — remove short, redundant, or unmapped contigs based on reference alignment coverage.
+```bash
+python contig_filter_by_paf.py \
+    --assembly_fa assembly.fa \
+    --contigs_vs_ref_paf contigs_vs_ref.paf \
+    --outprefix assebmly_filtered.fa
+```
+1. **Unassembled reads to assembled contigs alignment** — sam to bam output from `minimap2`. Used to verify proposed break points.
+```bash
+```
+1. **Breakpoint detection** — identify possible chimeric joins using PAF-based inspection (`paf_breakfinder.py`).
+```bash
+python paf_breakfinder.py \
+    --paf contigs_vs_ref.paf \
+    --outprefix assembly_breaks.tsv
+```
+1. **Breakpoint verification** - Use the GFA file from the HiFiASM output to incorporate additional evidence for the proposed break points.
+```bash
+python breakwright_gfa_annotator.py \
+    --gfa hifiasm_output.asm.hic.p_ctg.gfa \
+    --breaks assembly_breaks.tsv \
+    --outprefix assembly_breaks_gfa.tsv
+```
+1. **Breakpoint visualization** — plot local alignment structure and supporting read coverage (`break_viz_plus.py`).
+```bash
+python break_dotplot.py \
+    --paf contigs_vs_ref.paf \
+    --breaks assembly_breaks_gfa.tsv \
+    --outdir dotplots --mode full,per-chr --draw_chr_ticks --export_png
 
-Optionally, long reads (HiFi or ONT) can be remapped to filtered contigs to validate structural breaks.
+python break_viz_plus.py \
+    --bam hifi_reads_to_contigs.bam \
+    --breaks assembly_breaks_gfa.tsv \
+    --outdir viz --export_png
+```
+1. **Assembly correction** — split contigs at curated breakpoints (`split_breaks.py`).
+```bash
+```
 
 ---
 
