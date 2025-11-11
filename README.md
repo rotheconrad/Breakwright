@@ -11,50 +11,58 @@ The pipeline filters low-value contigs, identifies potential misjoins (e.g., fus
 This pipeline performs:
 
 1. **Genome Assembly** - Assemble PacBio HiFi reads with HiFiASM. *note: this pipeline can be used for other genome assemblies as well but you may have to skip the gfa step*
-```bash
-```
-1. **Contig to reference alignment** - align assembled contigs to reference genome using minimap2 for PAF output file. Used to find proposed break points
-```bash
-minimap2 -x asm5 ref.fa assembly.fa > contigs_vs_ref.paf
-```
-1. **Contig filtering** — remove short, redundant, or unmapped contigs based on reference alignment coverage.
-```bash
-python contig_filter_by_paf.py \
-    --assembly_fa assembly.fa \
-    --contigs_vs_ref_paf contigs_vs_ref.paf \
-    --outprefix assebmly_filtered.fa
-```
-1. **Unassembled reads to assembled contigs alignment** — sam to bam output from `minimap2`. Used to verify proposed break points.
-```bash
-```
-1. **Breakpoint detection** — identify possible chimeric joins using PAF-based inspection (`paf_breakfinder.py`).
-```bash
-python paf_breakfinder.py \
-    --paf contigs_vs_ref.paf \
-    --outprefix assembly_breaks.tsv
-```
-1. **Breakpoint verification** - Use the GFA file from the HiFiASM output to incorporate additional evidence for the proposed break points.
-```bash
-python breakwright_gfa_annotator.py \
-    --gfa hifiasm_output.asm.hic.p_ctg.gfa \
-    --breaks assembly_breaks.tsv \
-    --outprefix assembly_breaks_gfa.tsv
-```
-1. **Breakpoint visualization** — plot local alignment structure and supporting read coverage (`break_viz_plus.py`).
-```bash
-python break_dotplot.py \
-    --paf contigs_vs_ref.paf \
-    --breaks assembly_breaks_gfa.tsv \
-    --outdir dotplots --mode full,per-chr --draw_chr_ticks --export_png
-
-python break_viz_plus.py \
-    --bam hifi_reads_to_contigs.bam \
-    --breaks assembly_breaks_gfa.tsv \
-    --outdir viz --export_png
-```
-1. **Assembly correction** — split contigs at curated breakpoints (`split_breaks.py`).
-```bash
-```
+    ```bash
+    hifiasm -o sample hifi_reads.fa 
+    ```
+2. **Contig to reference alignment** - align assembled contigs to reference genome using minimap2 for PAF output file. Used to find proposed break points
+    ```bash
+    minimap2 -x asm5 ref.fa sample.bp.p_ctg.fa > contigs_vs_ref.paf
+    ```
+3. **Contig filtering** — remove short, redundant, or unmapped contigs based on reference alignment coverage (`01_breakwright_contig_paf_filter.py`).
+    ```bash
+    python 01_breakwright_contig_paf_filter.py \
+        --assembly_fa sample.bp.p_ctg.fa \
+        --contigs_vs_ref_paf contigs_vs_ref.paf \
+        --outprefix sample_assembly_filtered.fa
+    ```
+4. **Unassembled reads to assembled contigs alignment** — sam to bam output from `minimap2`. Used to verify proposed break points.
+    ```bash
+    minimap2 -ax map-hifi sample_assembly_filtered.fa hifi_reads.fastq.gz > hifi_reads_to_contigs.sam
+    samtools view -bS hifi_reads_to_contigs.sam | samtools sort -o hifi_reads_to_contigs.bam
+    samtools index hifi_reads_to_contigs.bam
+    ```
+5. **Breakpoint detection** — identify possible chimeric joins using PAF-based inspection (`02_breakwright_paf_breakfinder.py`).
+    ```bash
+    python 02_breakwright_paf_breakfinder.py \
+        --paf contigs_vs_ref.paf \
+        --outprefix assembly_breaks.tsv
+    ```
+6. **Breakpoint verification** - Use the GFA file from the HiFiASM output to incorporate additional evidence for the proposed break points (`03_breakwright_gfa_annotator.py`).
+    ```bash
+    python 03_breakwright_gfa_annotator.py \
+        --gfa sample.bp.p_ctg.gfa \
+        --breaks assembly_breaks.tsv \
+        --outprefix assembly_breaks_gfa.tsv
+    ```
+7. **Breakpoint visualization** — plot local alignment structure and supporting read coverage (`04_breakwright_dotplot.py` and `05_breakwright_viz_plus.py`).
+    ```bash
+    python 04_breakwright_dotplot.py \
+        --paf contigs_vs_ref.paf \
+        --breaks assembly_breaks_gfa.tsv \
+        --outdir dotplots --mode full,per-chr --draw_chr_ticks --export_png
+    
+    python 05_breakwright_viz_plus.py \
+        --bam hifi_reads_to_contigs.bam \
+        --breaks assembly_breaks_gfa.tsv \
+        --outdir viz --export_png
+    ```
+8. **Assembly correction** — split contigs at curated breakpoints (`06_breakwright_split_breaks.py`).
+    ```bash
+    python 06_breakwright_split_breaks.py \
+      --assembly_fa sample_assembly_filtered.fa \
+      --breaks_tsv curated_breaks.tsv \
+      --out_fa sample_assembly_filtered_corrected.fa
+    ```
 
 ---
 
@@ -64,10 +72,10 @@ All tools are open-source and installable via `conda`:
 
 - `python>=3.9`
 - `numpy`, `pandas`, `matplotlib`
+- `hifiasm`
 - `minimap2`
 - `samtools`
-- `mummer` (for dotplots)
-- `bbtools` (for assembly stats)
+- `seqkit` (for assembly stats)
 
 ---
 
@@ -78,28 +86,33 @@ conda create -p ./envs/binf python=3.10 -y
 conda activate ./envs/binf
 
 # Install dependencies
-conda install -c bioconda minimap2 mummer bbmap samtools -y
+conda install -c bioconda hifiasm minimap2 seqkit samtools -y
 pip install numpy pandas matplotlib
 ```
 
 ---
 
-## 🧭 Step 1. Map contigs to the reference genome
+## 🧬 Step 1. Assemble genome with HiFiASM
 
-Use `minimap2` to align assembled contigs to a high-quality reference genome (e.g., *Glycine max* Williams 82).
+Use `hifiasm` to assemble contigs.
 
 ```bash
-minimap2 -x asm5 -t 32 -a ref.fa assembly.fa > contigs_vs_ref.sam
-samtools view -bS contigs_vs_ref.sam | samtools sort -o contigs_vs_ref.bam
-samtools index contigs_vs_ref.bam
-
-# Also produce a PAF for downstream filtering
-minimap2 -x asm5 -t 32 ref.fa assembly.fa > contigs_vs_ref.paf
+hifiasm -o sample hifi_reads.fa
 ```
 
 ---
 
-## 🔍 Step 2. Filter contigs with `contig_filter_by_paf.py`
+## 🧭 Step 2. Map contigs to the reference genome
+
+Use `minimap2` to align assembled contigs to a high-quality reference genome (e.g., *Glycine max* Williams 82).
+
+```bash
+minimap2 -x asm5 -t 32 ref.fa sample.bp.p_ctg.fa > contigs_vs_ref.paf
+```
+
+---
+
+## 🔍 Step 3. Filter contigs with `01_breakwright_contig_paf_filter.py`
 
 Removes short contigs that are redundant or unmapped based on their novelty of reference coverage.
 
@@ -108,10 +121,10 @@ This script filters contigs from an assembly FASTA based on their alignments to 
 It removes short or redundant contigs that either don't map or map to regions already covered by longer contigs.
 
 ```bash
-python contig_filter_by_paf.py \
-  --assembly_fa assembly.fa \
+01_breakwright_contig_paf_filter.py \
+  --assembly_fa sample.bp.p_ctg.fa \
   --contigs_vs_ref_paf contigs_vs_ref.paf \
-  --outprefix filtered/soy \
+  --outprefix sample_assembly_filtered.fa \
   --min_len 10000 \
   --min_mapq 20 \
   --min_aln_len 5000 \
@@ -123,7 +136,7 @@ python contig_filter_by_paf.py \
 #### 💻 Example Command
 
 ```bash
-python contig_filter_by_paf.py   --assembly_fa assembly.fa   --contigs_vs_ref_paf contigs_vs_ref.paf   --outprefix filtered/soy   --min_len 10000   --min_mapq 20   --min_aln_len 5000   --min_identity 0.9   --novel_bp_thresh 10000   --novel_frac_thresh 0.25   --mode greedy
+01_breakwright_contig_paf_filter.py   --assembly_fa sample.bp.p_ctg.fa   --contigs_vs_ref_paf contigs_vs_ref.paf   --outprefix sample_assembly_filtered.fa   --min_len 10000   --min_mapq 20   --min_aln_len 5000   --min_identity 0.9   --novel_bp_thresh 10000   --novel_frac_thresh 0.25   --mode greedy
 ```
 
 #### 📤 Outputs
@@ -170,18 +183,18 @@ python contig_filter_by_paf.py   --assembly_fa assembly.fa   --contigs_vs_ref_pa
 
 ---
 
-## 🧬 Step 3. Map HiFi reads to the filtered contigs
+## 🧬 Step 4. Map HiFi reads to the filtered contigs
 
 This step is used to confirm breakpoints and support manual curation.
 
 ```bash
-minimap2 -ax map-hifi -t 32 soy.kept.fa hifi_reads.fastq.gz > reads_vs_contigs.sam
-samtools view -bS reads_vs_contigs.sam | samtools sort -o reads_vs_contigs.bam
-samtools index reads_vs_contigs.bam
+minimap2 -ax map-hifi -t 32 sample_assembly_filtered.fa hifi_reads.fastq.gz > hifi_reads_to_contigs.sam
+samtools view -bS hifi_reads_to_contigs.sam | samtools sort -o hifi_reads_to_contigs.bam
+samtools index hifi_reads_to_contigs.bam
 ```
 ---
 
-## 🔧 Step 4. Identify candidate breaks with `paf_breakfinder.py`
+## 🔧 Step 5. Identify candidate breaks with `paf_breakfinder.py`
 
 This script parses the PAF of contigs aligned to the reference to detect structural inconsistencies (e.g., multi-chromosome mappings, inversions, large internal gaps).
 
@@ -191,15 +204,15 @@ It detects hallmark patterns such as **reference chromosome switches**, **strand
 It also flags **micro-overlaps**, **identity drops**, **edge low-MAPQ blocks**, and **unmapped leading/trailing contig tails**.
 
 ```bash
-python paf_breakfinder.py \
+python 02_breakwright_paf_breakfinder.py \
   --paf contigs_vs_ref.paf \
-  --outprefix breaks/soy
+  --outprefix assembly_breaks.tsv
 ```
 
 #### 💻 Example
 
 ```bash
-python paf_breakfinder.py   --paf contigs_vs_ref.paf   --outprefix breaks/soy   --min_mapq 20 --min_aln_len 5000 --min_identity 0.9   --min_qgap 10000 --min_tjump 100000 --allow_overlap 1000   --max_micro_overlap 5000 --identity_drop 0.10 --low_mapq_edge 30   --min_tail_unmapped 20000 --max_merge_dist 10000
+python 02_breakwright_paf_breakfinder.py   --paf contigs_vs_ref.paf   --outprefix assembly_breaks.tsv  --min_mapq 20 --min_aln_len 5000 --min_identity 0.9   --min_qgap 10000 --min_tjump 100000 --allow_overlap 1000   --max_micro_overlap 5000 --identity_drop 0.10 --low_mapq_edge 30   --min_tail_unmapped 20000 --max_merge_dist 10000
 ```
 
 #### 📤 Outputs
@@ -254,7 +267,101 @@ python paf_breakfinder.py   --paf contigs_vs_ref.paf   --outprefix breaks/soy   
 
 ---
 
-## 📊 Step 5. Visualize breakpoints with `break_viz_plus.py`
+## 📊 Step 6. Verify breakpoints with `03_breakwright_gfa_annotator.py`
+
+---
+
+## 📊 Step 7a. Visualize breakpoints with `04_breakwright_dotplot.py`
+
+This complements `break_viz_plus.py` by giving a macroscopic alignment view.
+
+#### 🧠 Overview
+`break_dotplot.py` renders **dotplot-style figures** from **PAF** (contigs→reference):
+- **Full-genome dotplot** — concatenates reference chromosomes on the X-axis.
+- **Per-chromosome dotplots** — one figure per reference chromosome.
+- **Break markers** — plots **red “×”** markers at candidate break coordinates projected onto the dotplot.
+
+```bash
+python 04_breakwright_dotplot.py \
+    --paf contigs_vs_ref.paf \
+    --breaks assembly_breaks_gfa.tsv \
+    --outdir dotplots --mode full,per-chr --draw_chr_ticks --export_png
+```
+
+#### 💻 Examples
+
+Full genome + per-chromosome with breaks:
+```bash
+python 04_breakwright_dotplot.py   --paf contigs_vs_ref.paf   --breaks breaks/soy_breaks.tsv   --outdir dotplots   --mode full,per-chr   --paf_min_mapq 20 --paf_min_aln 5000 --paf_min_id 0.9   --draw_chr_ticks --export_pdf --export_png
+```
+
+#### 📤 Outputs
+
+- **Full genome:** `<outdir>/dotplot_full.pdf/.png`  
+- **Per-chromosome:** `<outdir>/dotplot_<tname>.pdf/.png`
+
+Each figure shows PAF block segments: **x = reference coordinate**, **y = contig coordinate**.  
+If `--breaks` is provided, per-break **red “×”** markers are drawn at projected positions.
+
+#### ⚙️ Required Arguments
+
+| Argument | Type | Description |
+|---|---|---|
+| `--paf` | *string (path)* | **Required.** PAF from `minimap2 -x asm5 ref.fa contigs.fa` (contigs→reference). |
+
+#### 🧩 Optional Arguments (with Defaults)
+
+| Argument | Default | Description |
+|---|---|---|
+| `--breaks` | *none* | Optional TSV with columns `qname,cut` (and optionally `reason`). Used to plot **red ×** markers. |
+| `--outdir` | `dotplots` | Output directory for figures. |
+| `--mode` | `full,per-chr` | Which plots to produce: `full`, `per-chr`, or `full,per-chr`. |
+| `--win_for_break_proj` | `200000` | When projecting breaks, search ±win on contig to find the adjacent PAF blocks. |
+| `--paf_min_mapq` | `20` | Minimum PAF MAPQ to include a block. |
+| `--paf_min_aln` | `5000` | Minimum PAF alignment length to include (bp). |
+| `--paf_min_id` | `0.90` | Minimum identity (nmatch/alen) to include. |
+| `--max_blocks` | `1000000` | Max blocks to render for the **full-genome** plot (subsample beyond). |
+| `--max_blocks_chr` | `200000` | Max blocks to render for **per-chromosome** plots. |
+| `--ref_order` | *none* | Optional text file listing reference chromosome names (one per line) to define X-axis order. Defaults to natural-sorted names found in PAF. |
+| `--draw_chr_ticks` | Flag | If set, draws vertical ticks at chromosome boundaries on the full-genome plot. |
+| `--dpi` | `300` | DPI for PNG export. |
+| `--export_pdf` | Flag | Export PDF figure(s). |
+| `--export_png` | Flag | Export PNG figure(s). |
+| `--label_reason` | Flag | Include `reason` in the legend/title if present in breaks. |
+| `--limit_chroms` | *none* | Limit number of reference chromosomes (for quick tests). |
+
+#### 🔬 Break Projection Details
+For each break (`qname,cut`):
+1. Find adjacent PAF blocks on that contig around `cut` (within `±win_for_break_proj`).  
+2. If two blocks straddle the cut: mark **two red ×** at the **end of the left block** and **start of the right block** in dotplot space.  
+3. If only one block is found: mark a single × at the **nearest end** of that block to the `cut`.  
+4. On the **full-genome** plot, reference **x** is offset by cumulative chromosome lengths (concatenation).
+
+#### 💻 Examples
+
+Full genome + per-chromosome with breaks:
+```bash
+python 04_breakwright_dotplot.py   --paf contigs_vs_ref.paf   --breaks breaks/soy_breaks.tsv   --outdir dotplots   --mode full,per-chr   --paf_min_mapq 20 --paf_min_aln 5000 --paf_min_id 0.9   --draw_chr_ticks --export_pdf --export_png
+```
+
+Per-chromosome only, natural order:
+```bash
+python 04_breakwright_dotplot.py   --paf contigs_vs_ref.paf   --outdir dotplots   --mode per-chr --export_png
+```
+
+Custom reference order:
+```bash
+python 04_breakwright_dotplot.py   --paf contigs_vs_ref.paf   --breaks breaks/soy_breaks.tsv   --ref_order ref_order.txt   --mode full --export_pdf --export_png
+```
+
+#### 🧠 Notes
+- Large assemblies can contain millions of blocks; performance guards (`--max_blocks*`) subsample beyond thresholds.  
+- The PAF field `tlen` (column 7) is used to estimate chromosome lengths for offsetting.  
+- If a break contig has no nearby blocks, it cannot be projected and is skipped with a warning. 
+
+---
+
+## 📊 Step 7b. Visualize breakpoints with `04_breakwright_dotplot.py`
 
 Generates clear, publication-ready images showing alignment structure and supporting read coverage across candidate breaks.
 
@@ -264,11 +371,10 @@ Given a **PAF** of contigs→reference, a **BAM** of HiFi reads mapped to contig
 it renders per-break figures showing **local contig alignment structure** and **read support** around the cut site.
 
 ```bash
-python break_viz_plus.py \
-  --paf contigs_vs_ref.paf \
-  --bam reads_vs_contigs.bam \
-  --breaks soy_breaks.tsv \
-  --outdir break_viz
+python 05_breakwright_viz_plus.py \
+    --bam hifi_reads_to_contigs.bam \
+    --breaks assembly_breaks_gfa.tsv \
+    --outdir viz --export_png
 ```
 
 #### 💻 Example
@@ -325,94 +431,7 @@ Each figure shows:
 
 ---
 
-## 📊 Step 6. Visualize breakpoints with `break_dotplot.py`
-
-This complements `break_viz_plus.py` by giving a macroscopic alignment view.
-
-#### 🧠 Overview
-`break_dotplot.py` renders **dotplot-style figures** from **PAF** (contigs→reference):
-- **Full-genome dotplot** — concatenates reference chromosomes on the X-axis.
-- **Per-chromosome dotplots** — one figure per reference chromosome.
-- **Break markers** — plots **red “×”** markers at candidate break coordinates projected onto the dotplot.
-
-```bash
-python break_dotplot.py \
-  --
-  --
-```
-
-#### 💻 Examples
-
-Full genome + per-chromosome with breaks:
-```bash
-python break_dotplot.py   --paf contigs_vs_ref.paf   --breaks breaks/soy_breaks.tsv   --outdir dotplots   --mode full,per-chr   --paf_min_mapq 20 --paf_min_aln 5000 --paf_min_id 0.9   --draw_chr_ticks --export_pdf --export_png
-```
-
-#### 📤 Outputs
-
-- **Full genome:** `<outdir>/dotplot_full.pdf/.png`  
-- **Per-chromosome:** `<outdir>/dotplot_<tname>.pdf/.png`
-
-Each figure shows PAF block segments: **x = reference coordinate**, **y = contig coordinate**.  
-If `--breaks` is provided, per-break **red “×”** markers are drawn at projected positions.
-
-#### ⚙️ Required Arguments
-
-| Argument | Type | Description |
-|---|---|---|
-| `--paf` | *string (path)* | **Required.** PAF from `minimap2 -x asm5 ref.fa contigs.fa` (contigs→reference). |
-
-#### 🧩 Optional Arguments (with Defaults)
-
-| Argument | Default | Description |
-|---|---|---|
-| `--breaks` | *none* | Optional TSV with columns `qname,cut` (and optionally `reason`). Used to plot **red ×** markers. |
-| `--outdir` | `dotplots` | Output directory for figures. |
-| `--mode` | `full,per-chr` | Which plots to produce: `full`, `per-chr`, or `full,per-chr`. |
-| `--win_for_break_proj` | `200000` | When projecting breaks, search ±win on contig to find the adjacent PAF blocks. |
-| `--paf_min_mapq` | `20` | Minimum PAF MAPQ to include a block. |
-| `--paf_min_aln` | `5000` | Minimum PAF alignment length to include (bp). |
-| `--paf_min_id` | `0.90` | Minimum identity (nmatch/alen) to include. |
-| `--max_blocks` | `1000000` | Max blocks to render for the **full-genome** plot (subsample beyond). |
-| `--max_blocks_chr` | `200000` | Max blocks to render for **per-chromosome** plots. |
-| `--ref_order` | *none* | Optional text file listing reference chromosome names (one per line) to define X-axis order. Defaults to natural-sorted names found in PAF. |
-| `--draw_chr_ticks` | Flag | If set, draws vertical ticks at chromosome boundaries on the full-genome plot. |
-| `--dpi` | `300` | DPI for PNG export. |
-| `--export_pdf` | Flag | Export PDF figure(s). |
-| `--export_png` | Flag | Export PNG figure(s). |
-| `--label_reason` | Flag | Include `reason` in the legend/title if present in breaks. |
-| `--limit_chroms` | *none* | Limit number of reference chromosomes (for quick tests). |
-
-#### 🔬 Break Projection Details
-For each break (`qname,cut`):
-1. Find adjacent PAF blocks on that contig around `cut` (within `±win_for_break_proj`).  
-2. If two blocks straddle the cut: mark **two red ×** at the **end of the left block** and **start of the right block** in dotplot space.  
-3. If only one block is found: mark a single × at the **nearest end** of that block to the `cut`.  
-4. On the **full-genome** plot, reference **x** is offset by cumulative chromosome lengths (concatenation).
-
-#### 💻 Examples
-
-Full genome + per-chromosome with breaks:
-```bash
-python break_dotplot.py   --paf contigs_vs_ref.paf   --breaks breaks/soy_breaks.tsv   --outdir dotplots   --mode full,per-chr   --paf_min_mapq 20 --paf_min_aln 5000 --paf_min_id 0.9   --draw_chr_ticks --export_pdf --export_png
-```
-
-Per-chromosome only, natural order:
-```bash
-python break_dotplot.py   --paf contigs_vs_ref.paf   --outdir dotplots   --mode per-chr --export_png
-```
-
-Custom reference order:
-```bash
-python break_dotplot.py   --paf contigs_vs_ref.paf   --breaks breaks/soy_breaks.tsv   --ref_order ref_order.txt   --mode full --export_pdf --export_png
-```
-
-#### 🧠 Notes
-- Large assemblies can contain millions of blocks; performance guards (`--max_blocks*`) subsample beyond thresholds.  
-- The PAF field `tlen` (column 7) is used to estimate chromosome lengths for offsetting.  
-- If a break contig has no nearby blocks, it cannot be projected and is skipped with a warning. 
-
-## ✂️ Step 7. Split contigs with `split_breaks.py`
+## ✂️ Step 8. Split contigs with `06_breakwright_split_breaks.py`
 
 Finally, manually curated breakpoints can be applied to generate a corrected assembly.
 
@@ -425,22 +444,22 @@ It preserves original contig names by default and only appends suffixes (`a`, `b
 - Drops or keeps very small fragments according to a length threshold.
 
 ```bash
-python split_breaks.py \
-  --assembly_fa soy.kept.fa \
+python 06_breakwright_split_breaks.py \
+  --assembly_fa sample_assembly_filtered.fa \
   --breaks_tsv curated_breaks.tsv \
-  --out_fa soy.corrected.fa
+  --out_fa sample_assembly_filtered_corrected.fa
 ```
 
 #### 💻 Examples
 
 ##### PAF-style cuts (default)
 ```bash
-python split_breaks.py   --assembly_fa soy.kept.fa   --breaks_tsv curated_breaks.tsv   --out_fa soy.corrected.fa   --cut_coord paf   --min_fragment_len 1000
+python 06_breakwright_split_breaks.py   --assembly_fa sample_assembly_filtered.fa   --breaks_tsv curated_breaks.tsv   --out_fa sample_assembly_filtered_corrected.fa   --cut_coord paf   --min_fragment_len 1000
 ```
 
 ##### 1-based cuts, drop tiny fragments
 ```bash
-python split_breaks.py   --assembly_fa soy.kept.fa   --breaks_tsv curated_breaks.tsv   --out_fa soy.corrected.fa   --cut_coord one-based   --min_fragment_len 5000   --min_gap_between_cuts 100
+python 06_breakwright_split_breaks.py   --assembly_fa sample_assembly_filtered.fa   --breaks_tsv curated_breaks.tsv   --out_fa sample_assembly_filtered_corrected.fa   --cut_coord one-based   --min_fragment_len 5000   --min_gap_between_cuts 100
 ```
 
 **Behavior:**
@@ -472,19 +491,6 @@ python split_breaks.py   --assembly_fa soy.kept.fa   --breaks_tsv curated_breaks
 - Breaks outside `[0, len]` or violating `--min_gap_between_cuts` are recorded in `*.skipped.tsv` and ignored.  
 - Fragment coordinates reported in `.map.tsv` are **0-based, end-exclusive** `[start, end)` for clarity and easy interval math.  
 - To **retain all fragments**, set `--min_fragment_len 0`.
-
----
-
-## 🧾 Example Workflow Summary
-
-| Step | Script | Input | Output | Purpose |
-|------|---------|--------|---------|----------|
-| 1 | minimap2 | contigs, reference | PAF/SAM/BAM | Reference alignment |
-| 2 | contig_filter_by_paf.py | PAF, FASTA | kept.fa | Filter redundant contigs |
-| 3 | minimap2 | HiFi reads, contigs | BAM | Read support mapping |
-| 4 | paf_breakfinder.py | PAF | breaks.tsv | Detect structural anomalies |
-| 5 | break_viz_plus.py | PAF, BAM | plots | Visual confirmation |
-| 6 | split_breaks.py | FASTA, curated breaks | corrected.fa | Generate final assembly |
 
 ---
 
