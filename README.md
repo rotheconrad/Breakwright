@@ -1,3 +1,5 @@
+![Breakwright Logo](images/breakwright_logo.png)
+
 # BREAKWRIGHT: Precision-crafted genome correction.
 
 This repository provides a reproducible workflow for detecting and correcting structural misassemblies in **genome assemblies** using a reference genome. It was developed using PacBio HiFi reads and assembled contigs from HiFiASM.
@@ -71,7 +73,7 @@ This pipeline performs:
 All tools are open-source and installable via `conda`:
 
 - `python>=3.9`
-- `numpy`, `pandas`, `matplotlib`
+- `numpy`, `pandas`, `matplotlib`, `pysam`
 - `hifiasm`
 - `minimap2`
 - `samtools`
@@ -265,9 +267,69 @@ python 02_breakwright_paf_breakfinder.py   --paf contigs_vs_ref.paf   --outprefi
 - Multiple reasons may be concatenated for a merged breakpoint window.  
 - Use together with read support (HiFi mappings) and visualization for final curation.
 
+#### Example output of breaks.tsv
+| qname      | cut      | reason        | qlen     | qbeg    | qend     | tname1      | tpos1    | tname2      | tpos2    |
+| ---------- | -------- | ------------- | -------- | ------- | -------- | ----------- | -------- | ----------- | -------- |
+| ptg000004l | 41418232 | unmapped_lead | 44724916 | 0       | 41418233 | NC_038241.2 | 1651120  | NC_038241.2 | 1651120  |
+| ptg000007l | 61937    | unmapped_lead | 5461000  | 0       | 61938    | NC_038251.2 | 19627494 | NC_038251.2 | 19627494 |
+| ptg000007l | 353365   | unmapped_tail | 5461000  | 353365  | 5461000  | NC_038251.2 | 19637626 | NC_038251.2 | 19637626 |
+| ptg000007l | 77458    | large_qgap    | 5461000  | 70277   | 106787   | NC_038251.2 | 19639015 | NC_038251.2 | 19634567 |
+| ptg000007l | 127865   | large_qgap    | 5461000  | 112266  | 177907   | NC_038251.2 | 19640635 | NC_038251.2 | 19636409 |
+| ptg000007l | 177907   | large_qgap    | 5461000  | 154954  | 218336   | NC_038251.2 | 19636409 | NC_038251.2 | 19640715 |
+| ptg000007l | 242879   | large_qgap    | 5461000  | 234763  | 276006   | NC_038251.2 | 19633745 | NC_038251.2 | 19638869 |
+| ptg000007l | 324101   | large_qgap    | 5461000  | 307828  | 353365   | NC_038251.2 | 19639711 | NC_038251.2 | 19637626 |
+| ptg000011l | 8222744  | unmapped_tail | 31842626 | 8222744 | 31842626 | NC_038255.2 | 43978809 | NC_038255.2 | 43978809 |
+
 ---
 
 ## 📊 Step 6. Verify breakpoints with `03_breakwright_gfa_annotator.py`
+
+#### Purpose
+Annotate curated breakpoints with **assembly-graph context** from a HiFiASM GFA:
+- Flag likely graph-supported breakpoints (e.g., nearby junctions, tips).
+- Export **Bandage-friendly subgraphs** around each break:
+  - Plain-text **subgraph summary** (`*.txt`)
+  - **Mini-GFA** fragment (`*.gfa`) — contains only `S` and `L` records for the local neighborhood.
+
+#### Example
+```bash
+python 03_breakwright_gfa_annotator.py   --gfa hifiasm.asm.p_ctg.gfa   --breaks breaks/soy_breaks.tsv   --outprefix breaks/soy_breaks_gfa   --subgraph_hops 2   --subgraph_min_overlap 100   --emit_subgraph_gfa
+```
+
+#### Outputs
+- `<outprefix>_breaks_gfa.tsv` — breaks with minimal GFA columns appended.
+- `<outprefix>_subgraphs.tsv` — index of per-break stats and file paths.
+- `<outprefix>_subgraphs/<qname>_<cut>.txt` — **detailed subgraph summary** (nodes/edges/degree/junctions).
+- `<outprefix>_subgraphs/<qname>_<cut>.gfa` — **mini-GFA** fragment (if `--emit_subgraph_gfa`).
+
+#### Required
+| Argument | Description |
+|---|---|
+| `--gfa` | HiFiASM `.gfa` (e.g., `hifiasm.asm.p_ctg.gfa`) |
+| `--breaks` | TSV with `qname` and `cut` (may include other cols) |
+| `--outprefix` | Prefix for output files |
+
+#### Optional (defaults)
+| Argument | Default | Description |
+|---|---|---|
+| `--subgraph_hops` | `2` | BFS depth in `L` links from the contig node |
+| `--subgraph_min_overlap` | `0` | Traverse links with numeric overlap ≥ this many bp (if parseable) |
+| `--subgraph_dir` | `<outprefix>_subgraphs/` | Directory for per-break artifacts |
+| `--emit_subgraph_gfa` | *flag* | If set, write `<contig>_<cut>.gfa` with only the relevant `S`/`L` lines |
+| `--sep` | `\t` | Breaks TSV delimiter |
+
+#### Example Output of breaks_gfa.tsv
+| qname | cut | reason | qlen | qbeg | qend | tname1 | tpos1 | tname2 | tpos2 | dist_to_start | dist_to_end | deg_left | deg_right | min_ovl_left | min_ovl_right | nearest_end | nearest_end_degree | nearest_junction_bp | gfa_flag |
+|-------|------|---------|-------|-------|-------|----------|--------|----------|--------|----------------|-------------|-----------|-------------|----------------|----------------|--------------------|----------------------|-----------|
+| ptg000004l | 41418232 | unmapped_lead | 44724916 | 0 | 41418233 | NC_038241.2 | 1651120 | NC_038241.2 | 1651120 | 41418232 | 3306684 | 0 | 0 | NA | NA | right | 0 | 3306684 | simple |
+| ptg000007l | 61937 | unmapped_lead | 5461000 | 0 | 61938 | NC_038251.2 | 19627494 | NC_038251.2 | 19627494 | 61937 | 5399063 | 0 | 0 | NA | NA | left | 0 | 61937 | simple |
+| ptg000007l | 353365 | unmapped_tail | 5461000 | 353365 | 5461000 | NC_038251.2 | 19637626 | NC_038251.2 | 19637626 | 353365 | 5107635 | 0 | 0 | NA | NA | left | 0 | 353365 | simple |
+| ptg000007l | 77458 | large_qgap | 5461000 | 70277 | 106787 | NC_038251.2 | 19639015 | NC_038251.2 | 19634567 | 77458 | 5383542 | 0 | 0 | NA | NA | left | 0 | 77458 | simple |
+| ptg000007l | 127865 | large_qgap | 5461000 | 112266 | 177907 | NC_038251.2 | 19640635 | NC_038251.2 | 19636409 | 127865 | 5333135 | 0 | 0 | NA | NA | left | 0 | 127865 | simple |
+| ptg000007l | 177907 | large_qgap | 5461000 | 154954 | 218336 | NC_038251.2 | 19636409 | NC_038251.2 | 19640715 | 177907 | 5283093 | 0 | 0 | NA | NA | left | 0 | 177907 | simple |
+| ptg000007l | 242879 | large_qgap | 5461000 | 234763 | 276006 | NC_038251.2 | 19633745 | NC_038251.2 | 19638869 | 242879 | 5218121 | 0 | 0 | NA | NA | left | 0 | 242879 | simple |
+| ptg000007l | 324101 | large_qgap | 5461000 | 307828 | 353365 | NC_038251.2 | 19639711 | NC_038251.2 | 19637626 | 324101 | 5136899 | 0 | 0 | NA | NA | left | 0 | 324101 | simple |
+| ptg000011l | 8222744 | unmapped_tail | 31842626 | 8222744 | 31842626 | NC_038255.2 | 43978809 | NC_038255.2 | 43978809 | 8222744 | 23619882 | 0 | 0 | NA | NA | left | 0 | 8222744 | simple |
 
 ---
 
@@ -287,6 +349,8 @@ python 04_breakwright_dotplot.py \
     --breaks assembly_breaks_gfa.tsv \
     --outdir dotplots --mode full,per-chr --draw_chr_ticks --export_png
 ```
+
+![Example dot plot figure output](images/dotplot_example.png)
 
 #### 💻 Examples
 
@@ -382,6 +446,8 @@ python 05_breakwright_viz_plus.py \
 ```bash
 python break_viz_plus.py   --paf contigs_vs_ref.paf   --bam reads_vs_contigs.bam   --breaks breaks/soy_breaks.tsv   --outdir break_viz   --win 50000   --paf_min_mapq 20 --paf_min_aln 5000 --paf_min_id 0.9   --min_mapq 0 --export_pdf --export_png --label_coords --label_reason   --telomere_motif TTTAGGG --motif_min_run 5
 ```
+
+![Example viz plus figure output](images/viz_plus_example.png)
 
 #### 📤 Outputs
 
