@@ -578,11 +578,16 @@ python 06_breakwright_split_breaks.py   --assembly_fa sample_assembly_filtered.f
 
 ## 📘 Citation
 
-If you use this workflow in your research, please cite this repository and the underlying tools:
+If you use this workflow in your research, please cite this repository:
+
+- Conrad R. (2025). Breakwright. GitHub repository. Available at: https://github.com/rotheconrad/Breakwright
+
+And the underlying tools:
 
 - Li, H. (2021). *Minimap2: pairwise alignment for nucleotide sequences.*  
 - Kolmogorov et al. (2020). *Assembly of long, error-free reads using HiFi data.*
 - BBMap, MUMmer, Samtools, and associated utilities.
+- TO DO - complete ref list.
 
 ---
 
