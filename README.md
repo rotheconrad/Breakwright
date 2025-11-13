@@ -199,7 +199,7 @@ samtools index hifi_reads_to_contigs.bam
 ```
 ---
 
-## 🔧 Step 5. Identify candidate breaks with `paf_breakfinder.py`
+## 🔧 Step 5. Identify candidate breaks with `02_breakwright_paf_breakfinder.py`
 
 This script parses the PAF of contigs aligned to the reference to detect structural inconsistencies (e.g., multi-chromosome mappings, inversions, large internal gaps).
 
@@ -591,19 +591,19 @@ If you use this workflow in your research, please cite this repository and the u
 ```
 project/
 ├── ref/
-│   └── Gmax_Wm82_ref.fa
+│   └── Gmax_Wm82_ref.fna
 ├── assembly/
-│   └── assembly.fa
+│   └── assembly.bp.p_ctg.fa
 ├── filtered/
-│   ├── soy.kept.fa
-│   ├── soy.decision.tsv
-│   └── soy.kept_coverage.bed
+│   ├── assembly.kept.fa
+│   ├── assembly.decision.tsv
+│   └── assembly.kept_coverage.bed
 ├── breaks/
-│   ├── soy_breaks.tsv
-│   └── soy_breaks_summary.tsv
+│   ├── assembly_breaks.tsv
+│   └── assembly_breaks_summary.tsv
 ├── break_viz/
 │   ├── contigX_break1.pdf
 │   └── contigX_break1.png
 └── final/
-    └── soy.corrected.fa
+    └── assembly.corrected.fa
 ```
