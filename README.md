@@ -502,6 +502,132 @@ Each figure shows:
 - For large BAMs, consider downsampling or providing a `--region_list` to focus on selected breaks.  
 - Figures are rendered with **matplotlib** (single axis per figure; default color cycle). 
 
+#### 📊 How to read Breakwright Viz Plus figures  
+
+Breakwright generates **per-break visualization panels** that help you determine whether a candidate scaffold/contig break is **real** (a true misassembly) or **benign** (repeat edge, mapping artifact, or correctly assembled region). Each break produces a **two-panel figure** centered on the reported breakpoint.
+
+This guide explains what the figure shows and how to interpret it.
+
+##### 📁 What the Script Produces
+
+For each row in your `breaks_gfa.tsv`, Breakwright writes:
+
+- `<outdir>/<contig><cut>.pdf`
+- `<outdir>/<contig><cut>.png`
+
+Each file contains **two coordinated panels**:
+
+1. **Coverage panel (top)**
+2. **Read-segment panel (bottom)**
+
+Both panels share the same horizontal axis: the contig coordinates across `cut ± window`.  
+A vertical **dashed line** marks the breakpoint.
+
+##### 🧭 Panel 1 — Coverage Track (Top Panel)
+
+###### **What it shows**
+  - Per-base HiFi read depth across the visualization window.
+  - A smoothed line tracing how many reads cover each genomic coordinate.
+  - The dashed vertical line marks the proposed break.
+
+###### **How to interpret it**
+  - **Smooth, consistent coverage** → normal region.
+  - **Sharp dips, valleys, or cliffs** near the dashed line → possible misassembly.
+  - **Coverage discontinuity** (left vs right side differ) → potential join boundary.
+
+Coverage alone doesn’t confirm a break, but it provides important supporting evidence.
+
+##### 🧭 Panel 2 — Read-Segment “Railroad Track” (Bottom Panel)
+
+###### **What it shows**
+  - Horizontal colored ticks representing each long read overlapping the window.
+  - Read segments are drawn as `[start → end]` lines at a single y-axis level.
+  - The density of lines reflects how many reads cover the region.
+  - Reads are optionally subsampled if the region has too many (`--max_reads`).
+
+###### **How to interpret it**
+This panel answers the key question:
+
+  - **Do long reads physically bridge across the candidate break?**
+
+  - **Dense continuous read segments spanning the dashed line**  
+    → strong evidence the contig is *correct*.
+
+  - **Reads stop before or start after the dashed line**  
+    → reads do **not** support continuity → likely misassembly.
+
+  - **Clear gap** in read footprints around the break  
+    → classic mis-join signature.
+
+This is the *most important panel* for evaluating break validity.
+
+##### 🏷️ Optional GFA Annotation Box
+
+If `--annotate_gfa` is enabled, a small text box appears in the lower panel summarizing:
+
+  - `gfa_flag` — graph category (e.g., `junction_near_end`, `weak_overlap_end`, `simple`)
+  - `deg_left`, `deg_right` — graph node degrees on either side of the cut
+  - `nearest_junction_bp` — distance to nearest GFA junction (in bp)
+  - `reason` — optional reason column from your TSV (e.g., `large_qgap`, `unmapped_tail`)
+
+These metadata help link read-based evidence with the graph topology that originally flagged the break.
+
+##### ✅ How to Confirm a **Real** Break
+
+A break is likely *real* if several of the following occur together:
+
+###### **1. Reads do *not* bridge the dashed line**
+  - Few or no long reads span across the position.
+  - A visible “gap” in the bottom panel.
+
+###### **2. Coverage dip or cliff at the dashed line**
+  - A strong valley or sudden change in the top panel.
+
+###### **3. GFA evidence supports conflict**
+Common warning flags:
+  - `junction_near_end`
+  - `weak_overlap_end`
+  - `tip_near_end`
+  - large `nearest_junction_bp`
+
+###### **4. Read starts/ends cluster at the cut**
+  - Many reads terminate exactly at the breakpoint.
+  - **If multiple signals agree, the break is almost certainly real.**
+
+##### ❌ How to Identify a **False Positive** Break
+
+A candidate break is likely *not real* when you see:
+
+###### **1. Many long reads cleanly bridge the break**
+  - Continuous line of read segments across the dashed boundary.
+
+###### **2. Smooth coverage across the region**
+  - No sharp dips or left/right discontinuities.
+
+###### **3. Simple or uninformative GFA flags**
+  - `simple`, `unmapped_lead`, `unmapped_tail`
+  - No nearby graph junction (`NJ:0–2000bp`).
+
+###### **4. Region overlaps repetitive sequence**
+  - Dips may reflect mappability issues rather than a real assembly error.
+
+
+#### 🔍 Recommended Workflow for Reviewing Breaks
+
+###### **1. Start with the read-segment panel**  
+  - Do long reads bridge the break?  
+  - Yes → probably *not* a break.  
+  - No → potential real break.
+
+###### **2. Check the coverage panel**  
+  - Dips/cliffs strengthen break evidence.
+
+###### **3. Check GFA annotations**  
+  - Junctions, weak overlaps, or tips indicate structural issues.
+
+###### **4. Combine evidence**  
+  - A real break typically shows: **No bridging reads + coverage discontinuity + GFA conflict**
+
 ---
 
 ## ✂️ Step 8. Split contigs with `06_breakwright_split_breaks.py`
