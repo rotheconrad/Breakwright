@@ -324,7 +324,7 @@ python 03_breakwright_gfa_annotator.py   --gfa hifiasm.asm.p_ctg.gfa   --breaks 
 #### Example Output of breaks_gfa.tsv
 
 | qname | cut | reason | qlen | qbeg | qend | tname1 | tpos1 | tname2 | tpos2 | dist_to_start | dist_to_end | deg_left | deg_right | min_ovl_left | min_ovl_right | nearest_end | nearest_end_degree | nearest_junction_bp | gfa_flag |
-|-------|------|---------|-------|-------|-------|----------|--------|----------|--------|----------------|-------------|-----------|-------------|----------------|----------------|------------------|--------------------|-----------|
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | ptg000004l | 41418232 | unmapped_lead | 44724916 | 0 | 41418233 | NC_038241.2 | 1651120 | NC_038241.2 | 1651120 | 41418232 | 3306684 | 0 | 0 | NA | NA | right | 0 | 3306684 | simple |
 | ptg000007l | 61937 | unmapped_lead | 5461000 | 0 | 61938 | NC_038251.2 | 19627494 | NC_038251.2 | 19627494 | 61937 | 5399063 | 0 | 0 | NA | NA | left | 0 | 61937 | simple |
 | ptg000007l | 353365 | unmapped_tail | 5461000 | 353365 | 5461000 | NC_038251.2 | 19637626 | NC_038251.2 | 19637626 | 353365 | 5107635 | 0 | 0 | NA | NA | left | 0 | 353365 | simple |
@@ -334,7 +334,6 @@ python 03_breakwright_gfa_annotator.py   --gfa hifiasm.asm.p_ctg.gfa   --breaks 
 | ptg000007l | 242879 | large_qgap | 5461000 | 234763 | 276006 | NC_038251.2 | 19633745 | NC_038251.2 | 19638869 | 242879 | 5218121 | 0 | 0 | NA | NA | left | 0 | 242879 | simple |
 | ptg000007l | 324101 | large_qgap | 5461000 | 307828 | 353365 | NC_038251.2 | 19639711 | NC_038251.2 | 19637626 | 324101 | 5136899 | 0 | 0 | NA | NA | left | 0 | 324101 | simple |
 | ptg000011l | 8222744 | unmapped_tail | 31842626 | 8222744 | 31842626 | NC_038255.2 | 43978809 | NC_038255.2 | 43978809 | 8222744 | 23619882 | 0 | 0 | NA | NA | left | 0 | 8222744 | simple |
-
 
 ---
 
