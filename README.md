@@ -78,18 +78,21 @@ All tools are open-source and installable via `conda`:
 - `minimap2`
 - `samtools`
 - `seqkit` (for assembly stats)
+- `mummer` (optional for additional dotplots)
+- `gnuplot` (optional for additional dotplots)
 
 ---
 
 ## ⚙️ Create Conda Environment
 
 ```bash
-conda create -p ./envs/binf python=3.10 -y
-conda activate ./envs/binf
+conda create -n breakwright -c conda-forge -c bioconda pysam seqkit hifiasm minimap samtools numpy pandas matplotlib
 
-# Install dependencies
-conda install -c bioconda hifiasm minimap2 seqkit samtools -y
-pip install numpy pandas matplotlib
+# or to a specified path
+
+conda create -p /envs/breakwright -c conda-forge -c bioconda pysam seqkit hifiasm minimap samtools numpy pandas matplotlib
+
+# optional mummer and gnuplot for additional dotplots?
 ```
 
 ---
