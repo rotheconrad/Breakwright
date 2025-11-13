@@ -4,7 +4,7 @@
 
 This repository provides a reproducible workflow for detecting and correcting structural misassemblies in **genome assemblies** using a reference genome. It was developed using PacBio HiFi reads and assembled contigs from HiFiASM.
 
-The pipeline filters low-value contigs, identifies potential misjoins (e.g., fused telomeres), visualizes breakpoints, and produces a corrected FASTA. It gives the user data to make informed curation decisions about which positions in assembled contigs to break.
+The pipeline filters low-value contigs, identifies potential misjoins (e.g., fused telomeres), visualizes breakpoints, and produces a corrected FASTA. It gives the user data to make informed curation decisions about which positions in misassembled contigs to break.
 
 ---
 
