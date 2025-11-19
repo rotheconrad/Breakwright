@@ -348,6 +348,8 @@ python 03_breakwright_gfa_annotator.py   --gfa hifiasm.asm.p_ctg.gfa   --breaks 
 
 This complements `break_viz_plus.py` by giving a macroscopic alignment view.
 
+THIS SCRIPT IS THE LEAST FINISHED OF ALL AND IS CURRENTLY NOT WORKING RIGHT
+
 #### 🧠 Overview
 `break_dotplot.py` renders **dotplot-style figures** from **PAF** (contigs→reference):
 - **Full-genome dotplot** — concatenates reference chromosomes on the X-axis.
@@ -458,7 +460,7 @@ python 05_breakwright_viz_plus.py \
 python break_viz_plus.py   --paf contigs_vs_ref.paf   --bam reads_vs_contigs.bam   --breaks breaks/soy_breaks.tsv   --outdir break_viz   --win 50000   --paf_min_mapq 20 --paf_min_aln 5000 --paf_min_id 0.9   --min_mapq 0 --export_pdf --export_png --label_coords --label_reason   --telomere_motif TTTAGGG --motif_min_run 5
 ```
 
-![Example viz plus figure output](images/viz_plus_example.png)
+![Example viz plus figure output](images/breakwright_viz_plus_example.png)
 
 #### 📤 Outputs
 
