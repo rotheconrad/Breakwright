@@ -32,7 +32,7 @@ The workflow has three scripts:
 
 An example panel (output of `breakwright_viz_plus.py`) is shown below:
 
-![Example Breakwright panel](/mnt/data/55ced7d9-3d3e-4ac9-ad13-81bbcc498fa4.png)
+![Example Breakwright panel](images/breakwright_viz_plus_example.png)
 
 ---
 
