@@ -1,740 +1,550 @@
-![Breakwright Logo](images/breakwright_logo.png)
+# Breakwright
 
-# BREAKWRIGHT: Precision-crafted genome correction.
+Breakwright is a three–stage workflow for **detecting, annotating, and visually vetting candidate misassemblies** in long-read assemblies.
 
-This repository provides a reproducible workflow for detecting and correcting structural misassemblies in **genome assemblies** using a reference genome. It was developed using PacBio HiFi reads and assembled contigs from HiFiASM.
+It ties together:
 
-The pipeline filters low-value contigs, identifies potential misjoins (e.g., fused telomeres), visualizes breakpoints, and produces a corrected FASTA. It gives the user data to make informed curation decisions about which positions in misassembled contigs to break.
+- contig→reference PAF alignments,
+- HiFiASM GFA graphs,
+- read alignments back to the assembly (BAM),
+- optional HiFiASM `lowQ.bed` tracks,
 
----
-
-## 🧬 Overview
-
-This pipeline performs:
-
-1. **Genome Assembly** - Assemble PacBio HiFi reads with HiFiASM. *note: this pipeline can be used for other genome assemblies as well but you may have to skip the gfa step*
-    ```bash
-    hifiasm -o sample hifi_reads.fa 
-    ```
-2. **Contig to reference alignment** - align assembled contigs to reference genome using minimap2 for PAF output file. Used to find proposed break points
-    ```bash
-    minimap2 -x asm5 ref.fa sample.bp.p_ctg.fa > contigs_vs_ref.paf
-    ```
-3. **Contig filtering** — remove short, redundant, or unmapped contigs based on reference alignment coverage (`01_breakwright_contig_paf_filter.py`).
-    ```bash
-    python 01_breakwright_contig_paf_filter.py \
-        --assembly_fa sample.bp.p_ctg.fa \
-        --contigs_vs_ref_paf contigs_vs_ref.paf \
-        --outprefix sample_assembly_filtered.fa
-    ```
-4. **Unassembled reads to assembled contigs alignment** — sam to bam output from `minimap2`. Used to verify proposed break points.
-    ```bash
-    minimap2 -ax map-hifi sample_assembly_filtered.fa hifi_reads.fastq.gz > hifi_reads_to_contigs.sam
-    samtools view -bS hifi_reads_to_contigs.sam | samtools sort -o hifi_reads_to_contigs.bam
-    samtools index hifi_reads_to_contigs.bam
-    ```
-5. **Breakpoint detection** — identify possible chimeric joins using PAF-based inspection (`02_breakwright_paf_breakfinder.py`).
-    ```bash
-    python 02_breakwright_paf_breakfinder.py \
-        --paf contigs_vs_ref.paf \
-        --outprefix assembly_breaks.tsv
-    ```
-6. **Breakpoint verification** - Use the GFA file from the HiFiASM output to incorporate additional evidence for the proposed break points (`03_breakwright_gfa_annotator.py`).
-    ```bash
-    python 03_breakwright_gfa_annotator.py \
-        --gfa sample.bp.p_ctg.gfa \
-        --breaks assembly_breaks.tsv \
-        --outprefix assembly_breaks_gfa.tsv
-    ```
-7. **Breakpoint visualization** — plot local alignment structure and supporting read coverage (`04_breakwright_dotplot.py` and `05_breakwright_viz_plus.py`).
-    ```bash
-    python 04_breakwright_dotplot.py \
-        --paf contigs_vs_ref.paf \
-        --breaks assembly_breaks_gfa.tsv \
-        --outdir dotplots --mode full,per-chr --draw_chr_ticks --export_png
-    
-    python 05_breakwright_viz_plus.py \
-        --bam hifi_reads_to_contigs.bam \
-        --breaks assembly_breaks_gfa.tsv \
-        --outdir viz --export_png
-    ```
-8. **Assembly correction** — split contigs at curated breakpoints (`06_breakwright_split_breaks.py`).
-    ```bash
-    python 06_breakwright_split_breaks.py \
-      --assembly_fa sample_assembly_filtered.fa \
-      --breaks_tsv curated_breaks.tsv \
-      --out_fa sample_assembly_filtered_corrected.fa
-    ```
+to give you **ranked break candidates** plus IGV-style figures for human inspection.
 
 ---
 
-## 🧩 Dependencies
+## Overview
 
-All tools are open-source and installable via `conda`:
+The workflow has three scripts:
 
-- `python>=3.9`
-- `numpy`, `pandas`, `matplotlib`, `pysam`
-- `hifiasm`
-- `minimap2`
-- `samtools`
-- `seqkit` (for assembly stats)
-- `mummer` (optional for additional dotplots)
-- `gnuplot` (optional for additional dotplots)
+1. **`breakwright_paf_breakfinder.py`**  
+   From contigs→reference PAF, proposes candidate breakpoints and reasons.
+
+2. **`breakwright_gfa_annotator.py`**  
+   Annotates those candidates with HiFiASM GFA evidence and exports small graph subgraphs.
+
+3. **`breakwright_viz_plus.py`**  
+   Uses read alignments, optional `lowQ.bed`, and optional contigs→reference PAF to:
+   - compute coverage/read-support metrics,
+   - classify strict spanning reads in reference space,
+   - generate IGV-style panels around each break,
+   - and write an augmented TSV with all support scores.
+
+An example panel (output of `breakwright_viz_plus.py`) is shown below:
+
+![Example Breakwright panel](/mnt/data/55ced7d9-3d3e-4ac9-ad13-81bbcc498fa4.png)
 
 ---
 
-## ⚙️ Create Conda Environment
+## 0. Inputs & Dependencies
+
+### Required inputs
+
+- **Assembly contigs**: from HiFiASM (or similar).
+- **Reads**: long reads mapped back to contigs (`.bam + .bai`).
+- **Reference genome**: for contig→reference mapping.
+- **HiFiASM GFA**: e.g. `*.p_ctg.gfa`.
+
+### Python dependencies
+
+- Python ≥ 3.8
+- `pysam`
+- `numpy`
+- `matplotlib`
+
+Install via:
 
 ```bash
-conda create -n breakwright -c conda-forge -c bioconda pysam seqkit hifiasm minimap samtools numpy pandas matplotlib
+pip install pysam numpy matplotlib
+````
 
-# or to a specified path
+---
 
-conda create -p /envs/breakwright -c conda-forge -c bioconda pysam seqkit hifiasm minimap samtools numpy pandas matplotlib
+## 1. `breakwright_paf_breakfinder.py`
 
-# optional mummer and gnuplot for additional dotplots?
+### Purpose
+
+Call **candidate misassembly breakpoints** from contig→reference PAF alignments.
+
+### Input
+
+PAF from `minimap2`:
+
+```bash
+minimap2 -x asm5 -t 32 ref.fa contigs.fa > contigs_vs_ref.paf
 ```
 
----
-
-## 🧬 Step 1. Assemble genome with HiFiASM
-
-Use `hifiasm` to assemble contigs.
+### Basic usage
 
 ```bash
-hifiasm -o sample hifi_reads.fa
-```
-
----
-
-## 🧭 Step 2. Map contigs to the reference genome
-
-Use `minimap2` to align assembled contigs to a high-quality reference genome (e.g., *Glycine max* Williams 82).
-
-```bash
-minimap2 -x asm5 -t 32 ref.fa sample.bp.p_ctg.fa > contigs_vs_ref.paf
-```
-
----
-
-## 🔍 Step 3. Filter contigs with `01_breakwright_contig_paf_filter.py`
-
-Removes short contigs that are redundant or unmapped based on their novelty of reference coverage.
-
-#### 🧠 Overview
-This script filters contigs from an assembly FASTA based on their alignments to a reference genome (in PAF format).
-It removes short or redundant contigs that either don't map or map to regions already covered by longer contigs.
-
-```bash
-01_breakwright_contig_paf_filter.py \
-  --assembly_fa sample.bp.p_ctg.fa \
-  --contigs_vs_ref_paf contigs_vs_ref.paf \
-  --outprefix sample_assembly_filtered.fa \
-  --min_len 10000 \
+python breakwright_paf_breakfinder.py \
+  --paf contigs_vs_ref.paf \
+  --outprefix breaks/soy \
   --min_mapq 20 \
   --min_aln_len 5000 \
-  --min_identity 0.9 \
-  --novel_bp_thresh 10000 \
-  --novel_frac_thresh 0.25
+  --min_identity 0.90 \
+  --min_qgap 10000 \
+  --min_tjump 100000 \
+  --allow_overlap 1000 \
+  --max_micro_overlap 5000 \
+  --identity_drop 0.10 \
+  --low_mapq_edge 30 \
+  --min_tail_unmapped 20000 \
+  --max_merge_dist 10000
 ```
 
-#### 💻 Example Command
+### What it does (conceptually)
 
-```bash
-01_breakwright_contig_paf_filter.py   --assembly_fa sample.bp.p_ctg.fa   --contigs_vs_ref_paf contigs_vs_ref.paf   --outprefix sample_assembly_filtered.fa   --min_len 10000   --min_mapq 20   --min_aln_len 5000   --min_identity 0.9   --novel_bp_thresh 10000   --novel_frac_thresh 0.25   --mode greedy
-```
+1. **Parse PAF into blocks per contig**
+   Retain only high-quality blocks (`min_mapq`, `min_aln_len`, `min_identity`).
+   Each block stores query span, reference span, strand, MAPQ, identity.
 
-#### 📤 Outputs
+2. **Mark repetitive regions on the query**
+   For each pair of blocks on the same contig:
 
-| Output File | Description |
-|--------------|-------------|
-| `<outprefix>.kept.fa` | FASTA file of all retained contigs. |
-| `<outprefix>.dropped.list` | List of dropped contig IDs (one per line). |
-| `<outprefix>.decision.tsv` | Table with columns: `contig`, `length`, `status`, `novel_bp`, `total_aligned_bp`, and `decision`. |
-| `<outprefix>.kept_coverage.bed` | BED file showing merged reference coverage contributed by kept contigs. Useful for IGV or `bedtools` visualization. |
+   * if they overlap on the query by ≥ 80% of the shorter block **and**
 
-#### ⚙️ Required Arguments
+     * map to different reference sequences, or
+     * map far apart on the same sequence (≥ `min_tjump/2` bp),
+       then both are marked `repetitive`, and their partner hits are recorded.
 
-| Argument | Type | Description |
-|-----------|------|-------------|
-| `--assembly_fa` | *string (path)* | **Required.** Path to the input contig FASTA file (can be `.gz`). Used to read contigs and calculate lengths. |
-| `--contigs_vs_ref_paf` | *string (path)* | **Required.** PAF file from `minimap2 -x asm5` mapping contigs to the reference genome. Used to assess coverage and redundancy. |
-| `--outprefix` | *string (path prefix)* | **Required.** Prefix for output files. All generated files will use this as a base (e.g., `outprefix.kept.fa`, `outprefix.dropped.list`, etc.). |
+3. **Identify unmapped tails**
+   If the leading or trailing unmapped region on a contig is ≥ `min_tail_unmapped` bp:
 
-#### 🧩 Optional Arguments (with Defaults)
+   * record `unmapped_lead` or `unmapped_tail` break.
 
-| Argument | Default | Description |
-|-----------|----------|-------------|
-| `--min_len` | `10000` | Contigs shorter than this (in bp) are considered “short.” Short contigs must add novel reference coverage to be retained. |
-| `--min_mapq` | `20` | Minimum mapping quality (MAPQ) required for an alignment block to be considered valid. |
-| `--min_aln_len` | `5000` | Minimum alignment length (in bp). Shorter alignments are ignored. |
-| `--min_identity` | `0.90` | Minimum identity (nmatch/alignment length). Alignments below this threshold are discarded. |
-| `--novel_bp_thresh` | `10000` | Minimum number of **novel reference base pairs** (not already covered by longer contigs) needed for a short contig to be retained. |
-| `--novel_frac_thresh` | `0.25` | Fraction of aligned bases that must be novel for a short contig to be kept. |
-| `--mode` | `"greedy"` | Determines contig evaluation order. Options: `"greedy"` (by contig length) or `"score"` (by aligned bp). |
+4. **Examine adjacent blocks in query order**
+   For each adjacent pair `(a,b)` on a contig, accumulate **reasons** that a break might exist at `a.qend`:
 
-#### 🧮 Suggested Thresholds
+   * Reference behaviour
 
-- **10 kb** → conservative default for removing tiny fragments.  
-- **5 kb** → lenient mode, keeps shorter but potentially unique contigs.  
-- **1 kb** → only if you want to preserve very small unique segments (e.g., organellar inserts).  
-  Consider raising `--novel_bp_thresh` in that case.
+     * `switch_chr` – `a.tname != b.tname`
+     * `strand_flip` – mapping orientation flips
+     * `large_tjump` – midpoints on same reference differ by ≥ `min_tjump`
 
-#### 🔍 Notes
+   * Query behaviour
 
-- If PAF lacks reliable identities, rely on `--min_mapq` and `--min_aln_len` thresholds.  
-- Use `--mode score` to rank contigs by total aligned bp instead of contig length.  
-- The BED output helps visualize coverage vs. the reference genome.
+     * `large_qgap` – gap on the contig between blocks ≥ `min_qgap`
+     * `micro_overlap` – overlap on the contig exceeds `allow_overlap` but ≤ `max_micro_overlap`
+
+   * Alignment quality changes
+
+     * `identity_drop` – identity drops by ≥ `identity_drop`
+     * `low_mapq_edge` – either block has MAPQ ≤ `low_mapq_edge`
+
+   * Repeats
+
+     * `repetitive_region` – either block overlaps a repetitive region
+
+5. **Merge nearby cuts**
+   Raw candidate cuts are merged if they’re within `max_merge_dist` bp on the contig.
+   Merging unions:
+
+   * `reason` terms,
+   * `repetitive_region` flags,
+   * and `repetitive_matches` partner metadata.
+
+### Outputs
+
+1. **Candidate breaks**
+
+`<outprefix>_breaks.tsv`
+
+Columns (per break):
+
+* `qname` – contig ID
+* `cut` – proposed break position (bp, contig coordinate)
+* `reason` – comma-separated list of reasons
+* `qlen` – contig length
+* `qbeg`, `qend` – local query span between the blocks
+* `tname1`, `tpos1` – reference locus for block A (midpoint)
+* `tname2`, `tpos2` – reference locus for block B (midpoint)
+* `repetitive_region` – yes/no
+* `repetitive_matches` – partner mappings in the form `tname:start-end@qQSTART-QEND`
+
+2. **Reason summary**
+
+`<outprefix>_summary.tsv`
+
+Two columns:
+
+* `reason`
+* `count` (how many breaks include that reason)
+
+3. **Optional block dump**
+
+If `--emit_all_blocks` is set:
+
+`<outprefix>_blocks.tsv` – QC view of all retained PAF blocks.
+
+### How to read it
+
+* Breaks with **multiple structural reasons** (e.g. `switch_chr,large_qgap,identity_drop`) are prime misassembly candidates.
+* Breaks flagged only as `repetitive_region` may simply reflect repeats and will often require GFA/read support to decide.
 
 ---
 
-## 🧬 Step 4. Map HiFi reads to the filtered contigs
+## 2. `breakwright_gfa_annotator.py`
 
-This step is used to confirm breakpoints and support manual curation.
+### Purpose
+
+Add **HiFiASM graph context** to each break candidate and export small subgraphs for manual inspection.
+
+### Basic usage
 
 ```bash
-minimap2 -ax map-hifi -t 32 sample_assembly_filtered.fa hifi_reads.fastq.gz > hifi_reads_to_contigs.sam
-samtools view -bS hifi_reads_to_contigs.sam | samtools sort -o hifi_reads_to_contigs.bam
-samtools index hifi_reads_to_contigs.bam
+python breakwright_gfa_annotator.py \
+  --gfa asm.p_ctg.gfa \
+  --breaks breaks/soy_breaks.tsv \
+  --outprefix breaks/soy \
+  --end_proximity_bp 10000 \
+  --min_overlap_warn 50 \
+  --subgraph_hops 2 \
+  --subgraph_min_overlap 0 \
+  --emit_subgraph_gfa
 ```
+
+### What it does
+
+1. **Parse GFA**
+
+Build per-segment information:
+
+* `seg_len[seg]` – length from sequence or `LN:i:` tag.
+* `deg[seg]['left'|'right']` – number of links at each end.
+* `ovls[seg]['left'|'right']` – list of overlap sizes for links on each end.
+* `adj[seg]` – undirected adjacency list (segment, overlap_bp) for BFS.
+* `s_lines`, `l_lines` – raw S/L lines (for mini-GFA export).
+
+2. **Annotate breaks**
+
+For each break:
+
+* If `qname` not in GFA, send row to `_unmatched.tsv`.
+* Otherwise compute:
+
+  * `qlen` – contig length from GFA.
+  * `dist_to_start`, `dist_to_end` – distance from cut to each end.
+  * `deg_left`, `deg_right` – degrees at ends.
+  * `min_ovl_left`, `min_ovl_right` – smallest overlap at each end (or `NA`).
+  * `nearest_end` – `"left"` or `"right"` (closest end).
+  * `nearest_end_degree` – degree at nearest end.
+  * `nearest_junction_bp` – distance from cut to the **nearest end with degree≠1** (or `NA`).
+
+  Then classify `gfa_flag`:
+
+  * `junction_near_end` – nearest end within `end_proximity_bp` and degree > 1.
+  * `tip_near_end`      – nearest end within `end_proximity_bp` and degree = 0.
+  * `weak_overlap_end`  – overlaps at an end < `min_overlap_warn` bp (and no other flag).
+  * `simple`            – none of the above.
+
+3. **Export subgraphs**
+
+For each annotated break, run a BFS starting at `qname`:
+
+* up to `subgraph_hops` link steps,
+* traversing only edges with `overlap_bp ≥ subgraph_min_overlap`.
+
+Write:
+
+* `<subgraph_dir>/<qname>_<cut>.txt` – enriched text dump:
+
+  * #nodes, #edges, degree stats, junction list (deg≥3), node and edge lists.
+* (optionally) `<subgraph_dir>/<qname>_<cut>.gfa` – mini-GFA with only relevant `S`/`L` lines.
+
+Also write an index:
+
+`<outprefix>_subgraphs.tsv` with:
+
+* `qname`, `cut`, `n_nodes`, `hops`, `min_overlap`,
+* `node_file`, `subgraph_gfa`, `nodes_csv`.
+
+### Outputs
+
+1. **Annotated breaks**
+
+`<outprefix>_breaks_gfa.tsv` – main output for the next stage.
+
+Adds:
+
+* `qlen`, `dist_to_start`, `dist_to_end`
+* `deg_left`, `deg_right`
+* `min_ovl_left`, `min_ovl_right`
+* `nearest_end`, `nearest_end_degree`
+* `nearest_junction_bp`
+* `gfa_flag`
+
+2. **Unmatched breaks**
+
+`<outprefix>_unmatched.tsv` – breaks whose `qname` is missing from the GFA (unless `--keep_only_matched`).
+
+3. **Subgraphs & index**
+
+As described above.
+
+### How to read it
+
+* `junction_near_end` with a small `nearest_junction_bp` means the contig end sits near a graph junction and is structurally interesting.
+* `tip_near_end` suggests a dangling contig end near the break.
+* `weak_overlap_end` highlights ends that are held together only by very short overlaps (potentially fragile joins).
+* Graph subgraphs help distinguish simple paths from complex repeat tangles around the break.
+
 ---
 
-## 🔧 Step 5. Identify candidate breaks with `02_breakwright_paf_breakfinder.py`
+## 3. `breakwright_viz_plus.py`
 
-This script parses the PAF of contigs aligned to the reference to detect structural inconsistencies (e.g., multi-chromosome mappings, inversions, large internal gaps).
+### Purpose
 
-#### 🧠 Overview
-`paf_breakfinder.py` scans a **PAF** file of **contigs → reference** alignments to identify **candidate misassembly breakpoints**.
-It detects hallmark patterns such as **reference chromosome switches**, **strand flips**, **large intrachromosomal jumps**, and **large internal gaps on the contig**.
-It also flags **micro-overlaps**, **identity drops**, **edge low-MAPQ blocks**, and **unmapped leading/trailing contig tails**.
+For each GFA-annotated break, generate:
+
+* quantitative read/coverage metrics,
+* optional `lowQ.bed`/GFA support scores,
+* optional contig→reference spanning-read classification,
+* IGV-style panels,
+* a final **augmented breaks table**.
+
+### Basic usage
 
 ```bash
-python 02_breakwright_paf_breakfinder.py \
+python breakwright_viz_plus.py \
+  --bam reads_to_contigs.bam \
+  --breaks breaks/soy_breaks_gfa.tsv \
+  --outdir viz \
+  --window 25000 \
+  --min_mapq 10 \
+  --hard_min_mapq_for_panel 20 \
+  --max_reads 10000 \
+  --min_aln_len 500 \
+  --dpi 300 \
+  --gfa_keep_flags junction_near_end,weak_overlap_end \
+  --gfa_max_nearest_junction_bp 20000 \
+  --lowq_bed asm.lowQ.bed \
   --paf contigs_vs_ref.paf \
-  --outprefix assembly_breaks.tsv
+  --span_flank_bp 2000 \
+  --ref_span_local_bp 50000
 ```
 
-#### 💻 Example
+### What it does
 
-```bash
-python 02_breakwright_paf_breakfinder.py   --paf contigs_vs_ref.paf   --outprefix assembly_breaks.tsv  --min_mapq 20 --min_aln_len 5000 --min_identity 0.9   --min_qgap 10000 --min_tjump 100000 --allow_overlap 1000   --max_micro_overlap 5000 --identity_drop 0.10 --low_mapq_edge 30   --min_tail_unmapped 20000 --max_merge_dist 10000
+1. **Filter breaks**
+
+* Keep only rows whose `gfa_flag` is in `--gfa_keep_flags`, if provided.
+* Keep only rows with `nearest_junction_bp ≤ --gfa_max_nearest_junction_bp`, if provided.
+* Optional `--limit` to cap number of breaks rendered.
+
+2. **Coverage & reads**
+
+For each break:
+
+* Define `[start,end] = [cut-window, cut+window]`, clamped to contig length.
+* Using `bam.fetch`:
+
+  * keep primary, non-duplicate, non-QC-fail reads,
+  * with `MAPQ ≥ max(min_mapq, hard_min_mapq_for_panel)`,
+  * `aligned_len ≥ min_aln_len`,
+  * random subsampling to `max_reads` if needed.
+* Build coverage array `cov[start:end]`.
+
+3. **Read support metrics**
+
+From `cov` and `all_reads`, compute:
+
+* `n_reads_window`
+* `n_reads_cross_cut` – reads overlapping the cut
+* `n_reads_span_strict` – reads that strictly span `cut±span_flank_bp`
+* `cov_at_cut`, `cov_median`
+* `cov_adj_cut`, `cov_adj_dist` – position and distance of local coverage trough (if present)
+* `cov_flag` – one of:
+
+  * `no_reads`
+  * `no_support_at_cut`
+  * `low_cov_trough`
+  * `ok`
+* `read_support_score` (0–2):
+
+  * 0 if no reads / no support at cut
+  * 1 for normal coverage across cut
+  * 2 if strong coverage trough
+
+4. **LowQ bed support (optional)**
+
+If `--lowq_bed` is provided:
+
+* `lowq_overlap` – `"yes"` if any lowQ interval overlaps the window.
+* `lowq_at_cut` – `"yes"` if lowQ interval covers the cut.
+* `lowq_support` – 1 if `lowq_at_cut=="yes"`, else 0.
+
+5. **GFA support score**
+
+Combine existing GFA annotations:
+
+* 2 points if `gfa_flag == junction_near_end` and `nearest_junction_bp ≤ threshold`.
+* 1 point if `gfa_flag ∈ {weak_overlap_end, tip_near_end}` or `deg_left`/`deg_right` ≠ 1.
+* 0 otherwise.
+
+6. **Total support score**
+
+```text
+support_score_total = gfa_support_score
+                      + read_support_score
+                      + lowq_support
 ```
 
-#### 📤 Outputs
+7. **Reference-span classification (optional)**
 
-| Output | Description |
-|---|---|
-| `<outprefix>_breaks.tsv` | Candidate breakpoints with columns: `qname, cut, reason, qlen, qbeg, qend, tname1, tpos1, tname2, tpos2`. |
-| `<outprefix>_summary.tsv` | Per-contig summary of counts by reason (`switch_chr`, `strand_flip`, `large_tjump`, `large_qgap`, `micro_overlap`, `identity_drop`, `low_mapq_edge`, `unmapped_lead`, `unmapped_tail`). |
-| `<outprefix>_blocks.tsv` | *(optional; if `--emit_all_blocks`)* Filtered alignment blocks retained after thresholds. |
+If `--paf` is provided:
 
-#### ⚙️ Required Arguments
+* Build contig→reference blocks (`parse_paf_blocks`).
+* For each strict spanning read:
 
-| Argument | Type | Description |
-|---|---|---|
-| `--paf` | *string (path)* | **Required.** PAF file from `minimap2 -x asm5 ref.fa contigs.fa` (contigs→reference). |
-| `--outprefix` | *string (path prefix)* | **Required.** Prefix for outputs (e.g., `breaks/soy`). |
+  * lift positions at `cut±span_flank_bp` into reference space (`lift_pos_to_ref`).
+  * classify each read:
 
-#### 🧩 Optional Arguments (with Defaults)
+    * `diff_chr`, `same_chr_far`, `same_chr_local`, `unmapped`, or `no_paf`.
+* Aggregate:
 
-| Argument | Default | Description |
-|---|---|---|
-| `--min_mapq` | `20` | Minimum MAPQ to accept a PAF alignment block. |
-| `--min_aln_len` | `5000` | Minimum alignment length (bp); shorter blocks are ignored. |
-| `--min_identity` | `0.90` | Minimum identity (nmatch/alen) to retain an alignment block. |
-| `--min_qgap` | `10000` | Minimum **contig gap** (bp) between adjacent blocks to flag a candidate break (`large_qgap`). |
-| `--min_tjump` | `100000` | Minimum **reference jump** (bp) across adjacent blocks on same chromosome to flag (`large_tjump`). |
-| `--allow_overlap` | `1000` | Allow up to this many bp of query overlap between adjacent blocks when evaluating gaps. |
-| `--require_ordered` | `True` | If set, only consider adjacency in ascending query order for breakpoint inference. |
-| `--max_merge_dist` | `10000` | Merge nearby breakpoints on the same contig if within this many bp into a single candidate. |
-| `--emit_all_blocks` | `False` | If set, also emits a TSV with all filtered alignment blocks for QC. |
-| **New:** `--max_micro_overlap` | `5000` | Flag `micro_overlap` if adjacent blocks overlap by **(allow_overlap, max_micro_overlap]** bp. |
-| **New:** `--identity_drop` | `0.10` | Flag `identity_drop` if identity decreases by ≥ this fraction between adjacent blocks (e.g., 0.10 = 10%). |
-| **New:** `--low_mapq_edge` | `30` | Flag `low_mapq_edge` if either adjacent block has MAPQ ≤ this value (even if ≥ `--min_mapq`). |
-| **New:** `--min_tail_unmapped` | `20000` | Flag `unmapped_lead` / `unmapped_tail` if leading/trailing unmapped contig tails exceed this many bp. |
+  * `n_span_ref_same_chr_local`
+  * `n_span_ref_same_chr_far`
+  * `n_span_ref_diff_chr`
+  * `n_span_ref_unmapped`
+  * `span_ref_class` summarizing the pattern (e.g. `reads_span_diff_chr`).
 
-#### 🔍 Detection Heuristics (adjacent blocks on the same contig)
-- **switch_chr** — consecutive blocks map to **different reference chromosomes**.  
-- **strand_flip** — strand changes between adjacent blocks on the same chromosome.  
-- **large_tjump** — same chromosome but reference midpoints jump by `≥ --min_tjump`.  
-- **large_qgap** — contig gap (`next.qstart - prev.qend`) ≥ `--min_qgap` after allowing `--allow_overlap`.  
-- **micro_overlap** — query overlap **in (allow_overlap, max_micro_overlap]** bp (suspicious micro-overlap).  
-- **identity_drop** — drop in identity (prev.ident - next.ident) ≥ `--identity_drop`.  
-- **low_mapq_edge** — either block has MAPQ ≤ `--low_mapq_edge` (despite passing `--min_mapq`).  
-- **unmapped_lead / unmapped_tail** — leading (`first.qstart`) or trailing (`qlen - last.qend`) unmapped contig tails ≥ `--min_tail_unmapped`.
+If no PAF is provided but you have strict spanners, `span_ref_class = "strict_spanners_no_paf"`.
 
-> Heuristics are conservative defaults; tune for organism and assembly specifics.
+8. **QC notes**
 
-#### 🧠 Notes
-- Blocks are sorted per contig by **query start** to infer adjacency.  
-- Multiple reasons may be concatenated for a merged breakpoint window.  
-- Use together with read support (HiFi mappings) and visualization for final curation.
+* `qc_note = "contig_not_in_bam"` – contig missing from BAM header.
+* `qc_note = "fetch_error"` – BAM fetch failure.
+* `qc_note = "no_reads_in_window"` – window is empty.
+  Only the first two skip plotting; `no_reads_in_window` can still produce an empty panel if desired.
 
-#### Example output of breaks.tsv
+### Outputs
 
-| qname      | cut      | reason        | qlen     | qbeg    | qend     | tname1      | tpos1    | tname2      | tpos2    |
-| ---------- | -------- | ------------- | -------- | ------- | -------- | ----------- | -------- | ----------- | -------- |
-| ptg000004l | 41418232 | unmapped_lead | 44724916 | 0       | 41418233 | NC_038241.2 | 1651120  | NC_038241.2 | 1651120  |
-| ptg000007l | 61937    | unmapped_lead | 5461000  | 0       | 61938    | NC_038251.2 | 19627494 | NC_038251.2 | 19627494 |
-| ptg000007l | 353365   | unmapped_tail | 5461000  | 353365  | 5461000  | NC_038251.2 | 19637626 | NC_038251.2 | 19637626 |
-| ptg000007l | 77458    | large_qgap    | 5461000  | 70277   | 106787   | NC_038251.2 | 19639015 | NC_038251.2 | 19634567 |
-| ptg000007l | 127865   | large_qgap    | 5461000  | 112266  | 177907   | NC_038251.2 | 19640635 | NC_038251.2 | 19636409 |
-| ptg000007l | 177907   | large_qgap    | 5461000  | 154954  | 218336   | NC_038251.2 | 19636409 | NC_038251.2 | 19640715 |
-| ptg000007l | 242879   | large_qgap    | 5461000  | 234763  | 276006   | NC_038251.2 | 19633745 | NC_038251.2 | 19638869 |
-| ptg000007l | 324101   | large_qgap    | 5461000  | 307828  | 353365   | NC_038251.2 | 19639711 | NC_038251.2 | 19637626 |
-| ptg000011l | 8222744  | unmapped_tail | 31842626 | 8222744 | 31842626 | NC_038255.2 | 43978809 | NC_038255.2 | 43978809 |
+For each break (unless plotting is skipped):
+
+1. **Figures**
+
+* `<outdir>/<prefix>_<qname>_<cut>.pdf`
+* `<outdir>/<prefix>_<qname>_<cut>.png`
+
+2. **Read list**
+
+* `<outdir>/<prefix>_<qname>_<cut>.reads.txt` with:
+
+  ```text
+  #lane  read_name  MAPQ  alen  start  end  span_ref_class
+  ```
+
+3. **Augmented break table**
+
+* `<outdir>/<breaks_basename>_reads.tsv`
+
+  (Note: this file is intentionally written to `--outdir`.)
+
+Adds the following columns (if not already present):
+
+```text
+cov_flag
+n_reads_window
+n_reads_cross_cut
+n_reads_span_strict
+cov_at_cut
+cov_median
+cov_adj_cut
+cov_adj_dist
+read_support_score
+gfa_support_score
+lowq_overlap
+lowq_at_cut
+lowq_support
+support_score_total
+qc_note
+n_span_ref_same_chr_local
+n_span_ref_same_chr_far
+n_span_ref_diff_chr
+n_span_ref_unmapped
+span_ref_class
+```
+
+You can sort/filter this table to prioritize which panels to inspect (e.g. high `support_score_total`, `span_ref_class == "reads_span_diff_chr"`).
+
+### How to read the panel
+
+Using the example above:
+
+* **Top panel** – coverage vs contig coordinate.
+
+  * Black dashed line: original `cut`.
+  * Red dashed line: `cov_adj_cut` (coverage trough) if different.
+* **Bottom panel** – top 50 reads, ranked by MAPQ and length.
+
+  * Horizontal bars = individual reads.
+  * Bar shade = MAPQ (darker is higher), color scale shown on the right.
+  * Border colors for strict spanning reads:
+
+    * Red: `diff_chr`
+    * Orange: `same_chr_far`
+    * Blue: `same_chr_local`
+    * Black: `unmapped`/`no_paf`
+  * Vertical colored ticks inside bands = SNPs vs a pseudo-reference (A/C/G/T), revealing haplotype patterns.
+* **Annotation box** – textual summary:
+
+  * `gfa_flag`, degrees (`L:deg_left R:deg_right`), `nearest_junction_bp`
+  * original `reason` from PAF stage
+  * `cov_flag`
+  * `S:total (G:gfa,R:read,Q:lowQ)` support scores
+  * `reads:cross`, `reads:strict`
+  * `ref_span:span_ref_class (diff=…, far=…, local=…, unmap=…)`
+  * `QC:` note if present.
+
+A “classic” misassembly signature is:
+
+* `cov_flag = low_cov_trough`,
+* many strict spanning reads,
+* `span_ref_class = reads_span_diff_chr` or `reads_span_same_chr_far`,
+* `gfa_flag = junction_near_end` or `weak_overlap_end`,
+* high `support_score_total`.
 
 ---
 
-## 📊 Step 6. Verify breakpoints with `03_breakwright_gfa_annotator.py`
+## 4. Suggested pipeline
 
-#### Purpose
-Annotate curated breakpoints with **assembly-graph context** from a HiFiASM GFA:
-- Flag likely graph-supported breakpoints (e.g., nearby junctions, tips).
-- Export **Bandage-friendly subgraphs** around each break:
-  - Plain-text **subgraph summary** (`*.txt`)
-  - **Mini-GFA** fragment (`*.gfa`) — contains only `S` and `L` records for the local neighborhood.
+A minimal end-to-end run might look like:
 
-#### Example
 ```bash
-python 03_breakwright_gfa_annotator.py   --gfa hifiasm.asm.p_ctg.gfa   --breaks breaks/soy_breaks.tsv   --outprefix breaks/soy_breaks_gfa   --subgraph_hops 2   --subgraph_min_overlap 100   --emit_subgraph_gfa
+# 1) Call candidate breaks from PAF
+python breakwright_paf_breakfinder.py \
+  --paf contigs_vs_ref.paf \
+  --outprefix breaks/soy
+
+# 2) Annotate with HiFiASM GFA and export subgraphs
+python breakwright_gfa_annotator.py \
+  --gfa asm.p_ctg.gfa \
+  --breaks breaks/soy_breaks.tsv \
+  --outprefix breaks/soy \
+  --emit_subgraph_gfa
+
+# 3) Visualize breaks with read coverage and ref-span classification
+python breakwright_viz_plus.py \
+  --bam reads_to_contigs.bam \
+  --breaks breaks/soy_breaks_gfa.tsv \
+  --outdir viz \
+  --paf contigs_vs_ref.paf \
+  --lowq_bed asm.lowQ.bed \
+  --gfa_keep_flags junction_near_end,weak_overlap_end \
+  --gfa_max_nearest_junction_bp 20000
 ```
 
-#### Outputs
-- `<outprefix>_breaks_gfa.tsv` — breaks with minimal GFA columns appended.
-- `<outprefix>_subgraphs.tsv` — index of per-break stats and file paths.
-- `<outprefix>_subgraphs/<qname>_<cut>.txt` — **detailed subgraph summary** (nodes/edges/degree/junctions).
-- `<outprefix>_subgraphs/<qname>_<cut>.gfa` — **mini-GFA** fragment (if `--emit_subgraph_gfa`).
+From here you can:
 
-#### Required
-
-| Argument | Description |
-|---|---|
-| `--gfa` | HiFiASM `.gfa` (e.g., `hifiasm.asm.p_ctg.gfa`) |
-| `--breaks` | TSV with `qname` and `cut` (may include other cols) |
-| `--outprefix` | Prefix for output files |
-
-#### Optional (defaults)
-
-| Argument | Default | Description |
-|---|---|---|
-| `--subgraph_hops` | `2` | BFS depth in `L` links from the contig node |
-| `--subgraph_min_overlap` | `0` | Traverse links with numeric overlap ≥ this many bp (if parseable) |
-| `--subgraph_dir` | `<outprefix>_subgraphs/` | Directory for per-break artifacts |
-| `--emit_subgraph_gfa` | *flag* | If set, write `<contig>_<cut>.gfa` with only the relevant `S`/`L` lines |
-| `--sep` | `\t` | Breaks TSV delimiter |
-
-#### Example Output of breaks_gfa.tsv
-
-| qname | cut | reason | qlen | qbeg | qend | tname1 | tpos1 | tname2 | tpos2 | dist_to_start | dist_to_end | deg_left | deg_right | min_ovl_left | min_ovl_right | nearest_end | nearest_end_degree | nearest_junction_bp | gfa_flag |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| ptg000004l | 41418232 | unmapped_lead | 44724916 | 0 | 41418233 | NC_038241.2 | 1651120 | NC_038241.2 | 1651120 | 41418232 | 3306684 | 0 | 0 | NA | NA | right | 0 | 3306684 | simple |
-| ptg000007l | 61937 | unmapped_lead | 5461000 | 0 | 61938 | NC_038251.2 | 19627494 | NC_038251.2 | 19627494 | 61937 | 5399063 | 0 | 0 | NA | NA | left | 0 | 61937 | simple |
-| ptg000007l | 353365 | unmapped_tail | 5461000 | 353365 | 5461000 | NC_038251.2 | 19637626 | NC_038251.2 | 19637626 | 353365 | 5107635 | 0 | 0 | NA | NA | left | 0 | 353365 | simple |
-| ptg000007l | 77458 | large_qgap | 5461000 | 70277 | 106787 | NC_038251.2 | 19639015 | NC_038251.2 | 19634567 | 77458 | 5383542 | 0 | 0 | NA | NA | left | 0 | 77458 | simple |
-| ptg000007l | 127865 | large_qgap | 5461000 | 112266 | 177907 | NC_038251.2 | 19640635 | NC_038251.2 | 19636409 | 127865 | 5333135 | 0 | 0 | NA | NA | left | 0 | 127865 | simple |
-| ptg000007l | 177907 | large_qgap | 5461000 | 154954 | 218336 | NC_038251.2 | 19636409 | NC_038251.2 | 19640715 | 177907 | 5283093 | 0 | 0 | NA | NA | left | 0 | 177907 | simple |
-| ptg000007l | 242879 | large_qgap | 5461000 | 234763 | 276006 | NC_038251.2 | 19633745 | NC_038251.2 | 19638869 | 242879 | 5218121 | 0 | 0 | NA | NA | left | 0 | 242879 | simple |
-| ptg000007l | 324101 | large_qgap | 5461000 | 307828 | 353365 | NC_038251.2 | 19639711 | NC_038251.2 | 19637626 | 324101 | 5136899 | 0 | 0 | NA | NA | left | 0 | 324101 | simple |
-| ptg000011l | 8222744 | unmapped_tail | 31842626 | 8222744 | 31842626 | NC_038255.2 | 43978809 | NC_038255.2 | 43978809 | 8222744 | 23619882 | 0 | 0 | NA | NA | left | 0 | 8222744 | simple |
+* review `viz/*pdf`/`*png` panels,
+* sort `viz/soy_breaks_gfa_reads.tsv` by `support_score_total`,
+* inspect GFA subgraphs in Bandage using the per-break mini-GFAs.
 
 ---
 
-## 📊 Step 7a. Visualize breakpoints with `04_breakwright_dotplot.py`
+## 5. Citation
 
-This complements `break_viz_plus.py` by giving a macroscopic alignment view.
+If you use Breakwright in a publication, please cite:
 
-#### 🧠 Overview
-`break_dotplot.py` renders **dotplot-style figures** from **PAF** (contigs→reference):
-- **Full-genome dotplot** — concatenates reference chromosomes on the X-axis.
-- **Per-chromosome dotplots** — one figure per reference chromosome.
-- **Break markers** — plots **red “×”** markers at candidate break coordinates projected onto the dotplot.
-
-```bash
-python 04_breakwright_dotplot.py \
-    --paf contigs_vs_ref.paf \
-    --breaks assembly_breaks_gfa.tsv \
-    --outdir dotplots --mode full,per-chr --draw_chr_ticks --export_png
-```
-
-![Example dot plot figure output](images/dotplot_example.png)
-
-#### 💻 Examples
-
-Full genome + per-chromosome with breaks:
-```bash
-python 04_breakwright_dotplot.py   --paf contigs_vs_ref.paf   --breaks breaks/soy_breaks.tsv   --outdir dotplots   --mode full,per-chr   --paf_min_mapq 20 --paf_min_aln 5000 --paf_min_id 0.9   --draw_chr_ticks --export_pdf --export_png
-```
-
-#### 📤 Outputs
-
-- **Full genome:** `<outdir>/dotplot_full.pdf/.png`  
-- **Per-chromosome:** `<outdir>/dotplot_<tname>.pdf/.png`
-
-Each figure shows PAF block segments: **x = reference coordinate**, **y = contig coordinate**.  
-If `--breaks` is provided, per-break **red “×”** markers are drawn at projected positions.
-
-#### ⚙️ Required Arguments
-
-| Argument | Type | Description |
-|---|---|---|
-| `--paf` | *string (path)* | **Required.** PAF from `minimap2 -x asm5 ref.fa contigs.fa` (contigs→reference). |
-
-#### 🧩 Optional Arguments (with Defaults)
-
-| Argument | Default | Description |
-|---|---|---|
-| `--breaks` | *none* | Optional TSV with columns `qname,cut` (and optionally `reason`). Used to plot **red ×** markers. |
-| `--outdir` | `dotplots` | Output directory for figures. |
-| `--mode` | `full,per-chr` | Which plots to produce: `full`, `per-chr`, or `full,per-chr`. |
-| `--win_for_break_proj` | `200000` | When projecting breaks, search ±win on contig to find the adjacent PAF blocks. |
-| `--paf_min_mapq` | `20` | Minimum PAF MAPQ to include a block. |
-| `--paf_min_aln` | `5000` | Minimum PAF alignment length to include (bp). |
-| `--paf_min_id` | `0.90` | Minimum identity (nmatch/alen) to include. |
-| `--max_blocks` | `1000000` | Max blocks to render for the **full-genome** plot (subsample beyond). |
-| `--max_blocks_chr` | `200000` | Max blocks to render for **per-chromosome** plots. |
-| `--ref_order` | *none* | Optional text file listing reference chromosome names (one per line) to define X-axis order. Defaults to natural-sorted names found in PAF. |
-| `--draw_chr_ticks` | Flag | If set, draws vertical ticks at chromosome boundaries on the full-genome plot. |
-| `--dpi` | `300` | DPI for PNG export. |
-| `--export_pdf` | Flag | Export PDF figure(s). |
-| `--export_png` | Flag | Export PNG figure(s). |
-| `--label_reason` | Flag | Include `reason` in the legend/title if present in breaks. |
-| `--limit_chroms` | *none* | Limit number of reference chromosomes (for quick tests). |
-
-#### 🔬 Break Projection Details
-For each break (`qname,cut`):
-1. Find adjacent PAF blocks on that contig around `cut` (within `±win_for_break_proj`).  
-2. If two blocks straddle the cut: mark **two red ×** at the **end of the left block** and **start of the right block** in dotplot space.  
-3. If only one block is found: mark a single × at the **nearest end** of that block to the `cut`.  
-4. On the **full-genome** plot, reference **x** is offset by cumulative chromosome lengths (concatenation).
-
-#### 💻 Examples
-
-Full genome + per-chromosome with breaks:
-```bash
-python 04_breakwright_dotplot.py   --paf contigs_vs_ref.paf   --breaks breaks/soy_breaks.tsv   --outdir dotplots   --mode full,per-chr   --paf_min_mapq 20 --paf_min_aln 5000 --paf_min_id 0.9   --draw_chr_ticks --export_pdf --export_png
-```
-
-Per-chromosome only, natural order:
-```bash
-python 04_breakwright_dotplot.py   --paf contigs_vs_ref.paf   --outdir dotplots   --mode per-chr --export_png
-```
-
-Custom reference order:
-```bash
-python 04_breakwright_dotplot.py   --paf contigs_vs_ref.paf   --breaks breaks/soy_breaks.tsv   --ref_order ref_order.txt   --mode full --export_pdf --export_png
-```
-
-#### 🧠 Notes
-- Large assemblies can contain millions of blocks; performance guards (`--max_blocks*`) subsample beyond thresholds.  
-- The PAF field `tlen` (column 7) is used to estimate chromosome lengths for offsetting.  
-- If a break contig has no nearby blocks, it cannot be projected and is skipped with a warning. 
-
----
-
-## 📊 Step 7b. Visualize breakpoints with `04_breakwright_dotplot.py`
-
-Generates clear, publication-ready images showing alignment structure and supporting read coverage across candidate breaks.
-
-#### 🧠 Overview
-`break_viz_plus.py` produces **publication-ready panels** to visually confirm candidate misassembly breakpoints.
-Given a **PAF** of contigs→reference, a **BAM** of HiFi reads mapped to contigs, and a TSV of curated or predicted **breaks**,
-it renders per-break figures showing **local contig alignment structure** and **read support** around the cut site.
-
-```bash
-python 05_breakwright_viz_plus.py \
-    --bam hifi_reads_to_contigs.bam \
-    --breaks assembly_breaks_gfa.tsv \
-    --outdir viz --export_png
-```
-
-#### 💻 Example
-
-```bash
-python break_viz_plus.py   --paf contigs_vs_ref.paf   --bam reads_vs_contigs.bam   --breaks breaks/soy_breaks.tsv   --outdir break_viz   --win 50000   --paf_min_mapq 20 --paf_min_aln 5000 --paf_min_id 0.9   --min_mapq 0 --export_pdf --export_png --label_coords --label_reason   --telomere_motif TTTAGGG --motif_min_run 5
-```
-
-![Example viz plus figure output](images/viz_plus_example.png)
-
-#### 📤 Outputs
-
-For each break (row in `--breaks`), the script writes one or two files (depending on flags):
-- `<outdir>/<qname>_<cut>.pdf` (if `--export_pdf`)  
-- `<outdir>/<qname>_<cut>.png` (if `--export_png`)
-
-Each figure shows:
-- **Top overlay:** PAF block spans across the window, relative to query coordinates (contig).  
-- **Bottom plot:** Smoothed **read coverage** across the same window.  
-- Vertical line at the **cut** position; optional labels, motif marks.
-
-#### ⚙️ Required Arguments
-
-| Argument | Type | Description |
-|---|---|---|
-| `--paf` | *string (path)* | **Required.** PAF file from `minimap2 -x asm5 ref.fa contigs.fa` (contigs→reference). |
-| `--bam` | *string (path)* | **Required.** BAM of HiFi reads mapped to the contigs (e.g., `minimap2 -x map-hifi`). Must be indexed (`.bai`). |
-| `--breaks` | *string (path)* | **Required.** TSV of break candidates (e.g., from `paf_breakfinder.py`), with columns: `qname, cut` (plus optional metadata). |
-| `--outdir` | *string (path)* | **Required.** Output directory for figures. |
-
-#### 🧩 Optional Arguments (with Defaults)
-
-| Argument | Default | Description |
-|---|---|---|
-| `--win` | `50000` | Window size (bp) on each side of the cut to display (total span = 2×win). |
-| `--min_mapq` | `0` | Minimum MAPQ for reads to count toward coverage. |
-| `--max_reads` | `1000000` | Upper bound on reads to consider when computing coverage (for performance safety). |
-| `--paf_min_mapq` | `20` | Minimum MAPQ to include a PAF alignment block in the overlay. |
-| `--paf_min_aln` | `5000` | Minimum PAF block length to display. |
-| `--paf_min_id` | `0.90` | Minimum identity for a PAF block to display. |
-| `--dpi` | `300` | Figure DPI for PNG export. |
-| `--font_size` | `10` | Base font size (axis labels, tick labels). |
-| `--export_pdf` | Flag | If set, export a PDF per breakpoint. |
-| `--export_png` | Flag | If set, export a PNG per breakpoint. |
-| `--label_coords` | Flag | If set, plot coordinate ticks and label the cut site. |
-| `--label_reason` | Flag | If set, annotate the figure title with the break reason(s) if present in the TSV. |
-| `--telomere_motif` | `TTTAGGG` | Repeat motif to annotate (optional; soybean default). |
-| `--motif_min_run` | `5` | Minimum number of consecutive motif repeats to annotate. |
-| `--region_list` | *none* | Optional TSV listing `qname,cut,win` to override per-break window size. |
-| `--limit` | *none* | Limit number of breaks to render (for testing). |
-
-#### 🧠 Notes
-- Ensure `--bam` is coordinate-sorted and indexed (`.bai`).  
-- For large BAMs, consider downsampling or providing a `--region_list` to focus on selected breaks.  
-- Figures are rendered with **matplotlib** (single axis per figure; default color cycle). 
-
-#### 📊 How to read Breakwright Viz Plus figures  
-
-Breakwright generates **per-break visualization panels** that help you determine whether a candidate scaffold/contig break is **real** (a true misassembly) or **benign** (repeat edge, mapping artifact, or correctly assembled region). Each break produces a **two-panel figure** centered on the reported breakpoint.
-
-This guide explains what the figure shows and how to interpret it.
-
-##### 📁 What the Script Produces
-
-For each row in your `breaks_gfa.tsv`, Breakwright writes:
-
-<outdir>/<contig><cut>.pdf
-<outdir>/<contig><cut>.png
-
-Each file contains **two coordinated panels**:
-
-1. **Coverage panel (top)**
-2. **Read-segment panel (bottom)**
-
-Both panels share the same horizontal axis: the contig coordinates across `cut ± window`.  
-A vertical **dashed line** marks the breakpoint.
-
-##### 🧭 Panel 1 — Coverage Track (Top Panel)
-
-###### **What it shows**
-  - Per-base HiFi read depth across the visualization window.
-  - A smoothed line tracing how many reads cover each genomic coordinate.
-  - The dashed vertical line marks the proposed break.
-
-###### **How to interpret it**
-  - **Smooth, consistent coverage** → normal region.
-  - **Sharp dips, valleys, or cliffs** near the dashed line → possible misassembly.
-  - **Coverage discontinuity** (left vs right side differ) → potential join boundary.
-
-Coverage alone doesn’t confirm a break, but it provides important supporting evidence.
-
-##### 🧭 Panel 2 — Read-Segment “Railroad Track” (Bottom Panel)
-
-###### **What it shows**
-  - Horizontal colored ticks representing each long read overlapping the window.
-  - Read segments are drawn as `[start → end]` lines at a single y-axis level.
-  - The density of lines reflects how many reads cover the region.
-  - Reads are optionally subsampled if the region has too many (`--max_reads`).
-
-###### **How to interpret it**
-This panel answers the key question:
-
-  - **Do long reads physically bridge across the candidate break?**
-
-  - **Dense continuous read segments spanning the dashed line**  
-    → strong evidence the contig is *correct*.
-
-  - **Reads stop before or start after the dashed line**  
-    → reads do **not** support continuity → likely misassembly.
-
-  - **Clear gap** in read footprints around the break  
-    → classic mis-join signature.
-
-This is the *most important panel* for evaluating break validity.
-
-##### 🏷️ Optional GFA Annotation Box
-
-If `--annotate_gfa` is enabled, a small text box appears in the lower panel summarizing:
-
-  - `gfa_flag` — graph category (e.g., `junction_near_end`, `weak_overlap_end`, `simple`)
-  - `deg_left`, `deg_right` — graph node degrees on either side of the cut
-  - `nearest_junction_bp` — distance to nearest GFA junction (in bp)
-  - `reason` — optional reason column from your TSV (e.g., `large_qgap`, `unmapped_tail`)
-
-These metadata help link read-based evidence with the graph topology that originally flagged the break.
-
-##### ✅ How to Confirm a **Real** Break
-
-A break is likely *real* if several of the following occur together:
-
-###### **1. Reads do *not* bridge the dashed line**
-  - Few or no long reads span across the position.
-  - A visible “gap” in the bottom panel.
-
-###### **2. Coverage dip or cliff at the dashed line**
-  - A strong valley or sudden change in the top panel.
-
-###### **3. GFA evidence supports conflict**
-Common warning flags:
-  - `junction_near_end`
-  - `weak_overlap_end`
-  - `tip_near_end`
-  - large `nearest_junction_bp`
-
-###### **4. Read starts/ends cluster at the cut**
-  - Many reads terminate exactly at the breakpoint.
-  - **If multiple signals agree, the break is almost certainly real.**
-
-##### ❌ How to Identify a **False Positive** Break
-
-A candidate break is likely *not real* when you see:
-
-###### **1. Many long reads cleanly bridge the break**
-  - Continuous line of read segments across the dashed boundary.
-
-###### **2. Smooth coverage across the region**
-  - No sharp dips or left/right discontinuities.
-
-###### **3. Simple or uninformative GFA flags**
-  - `simple`, `unmapped_lead`, `unmapped_tail`
-  - No nearby graph junction (`NJ:0–2000bp`).
-
-###### **4. Region overlaps repetitive sequence**
-  - Dips may reflect mappability issues rather than a real assembly error.
-
-
-#### 🔍 Recommended Workflow for Reviewing Breaks
-
-###### **1. Start with the read-segment panel**  
-  - Do long reads bridge the break?  
-  - Yes → probably *not* a break.  
-  - No → potential real break.
-
-###### **2. Check the coverage panel**  
-  - Dips/cliffs strengthen break evidence.
-
-###### **3. Check GFA annotations**  
-  - Junctions, weak overlaps, or tips indicate structural issues.
-
-###### **4. Combine evidence**  
-  - A real break typically shows: **No bridging reads + coverage discontinuity + GFA conflict**
-
----
-
-## ✂️ Step 8. Split contigs with `06_breakwright_split_breaks.py`
-
-Finally, manually curated breakpoints can be applied to generate a corrected assembly.
-
-#### 🧠 Overview
-`split_breaks.py` applies **curated breakpoints** to an assembly FASTA and writes a **corrected FASTA**.
-It preserves original contig names by default and only appends suffixes (`a`, `b`, `c`, …) to contigs that are **actually split**.
-
-- Accepts break coordinates from **PAF context** (default: `--cut_coord paf`) where `cut` is an index between bases
-  (e.g., using `qend` from PAF, 0-based, end-exclusive), or **1-based** cuts (`--cut_coord one-based`).  
-- Drops or keeps very small fragments according to a length threshold.
-
-```bash
-python 06_breakwright_split_breaks.py \
-  --assembly_fa sample_assembly_filtered.fa \
-  --breaks_tsv curated_breaks.tsv \
-  --out_fa sample_assembly_filtered_corrected.fa
-```
-
-#### 💻 Examples
-
-##### PAF-style cuts (default)
-```bash
-python 06_breakwright_split_breaks.py   --assembly_fa sample_assembly_filtered.fa   --breaks_tsv curated_breaks.tsv   --out_fa sample_assembly_filtered_corrected.fa   --cut_coord paf   --min_fragment_len 1000
-```
-
-##### 1-based cuts, drop tiny fragments
-```bash
-python 06_breakwright_split_breaks.py   --assembly_fa sample_assembly_filtered.fa   --breaks_tsv curated_breaks.tsv   --out_fa sample_assembly_filtered_corrected.fa   --cut_coord one-based   --min_fragment_len 5000   --min_gap_between_cuts 100
-```
-
-**Behavior:**
-- Default: preserves original contig names  
-- Contigs with breaks get suffixes (`a`, `b`, `c`, …)  
-- Writes mapping tables (`.map.tsv`) and optionally drops very short fragments.
-
-#### ⚙️ Required Arguments
-
-| Argument | Type | Description |
-|---|---|---|
-| `--assembly_fa` | *string (path)* | **Required.** Input assembly FASTA (supports `.gz`). |
-| `--breaks_tsv` | *string (path)* | **Required.** TSV of curated breakpoints with columns including `qname` and `cut`. Other columns are ignored. |
-| `--out_fa` | *string (path)* | **Required.** Output FASTA for the split assembly. |
-
-#### 🧩 Optional Arguments (with Defaults)
-
-| Argument | Default | Description |
-|---|---|---|
-| `--cut_coord` | `paf` | Coordinate convention for `cut`. Options: `paf` (0-based index like PAF `qend`) or `one-based`. |
-| `--min_fragment_len` | `1000` | Drop fragments shorter than this many bp. Set `0` to keep everything. |
-| `--min_gap_between_cuts` | `50` | Ignore multiple cuts closer than this many bp (de-duplicate noisy cuts). |
-| `--suffix_style` | `letters` | Suffix style for split fragments: `letters` → `a,b,c,...` (default), or `num` → `.1,.2,.3`. |
-| `--wrap` | `60` | FASTA line wrap width. |
-| `--report_prefix` | `<out_fa basename>` | Prefix for sidecar reports. If not given, derived from `--out_fa`. |
-| `--gzip_out` | `False` | If set, write `--out_fa` as gzip (`.gz`). |
-
-#### 🔍 Notes
-- Breaks outside `[0, len]` or violating `--min_gap_between_cuts` are recorded in `*.skipped.tsv` and ignored.  
-- Fragment coordinates reported in `.map.tsv` are **0-based, end-exclusive** `[start, end)` for clarity and easy interval math.  
-- To **retain all fragments**, set `--min_fragment_len 0`.
-
----
-
-## 🧠 Notes and Best Practices
-
-- For large genomes, allocate at least **128 GB RAM** and **32 threads** for `minimap2` and `ragtag`.
-- Always verify breakpoints visually before splitting contigs.
-- Keep intermediate `*.bam` and `*.paf` files — they are invaluable for QC.
-- Adjust thresholds depending on expected heterozygosity and repeat content.
-
----
-
-## 📘 Citation
-
-If you use this workflow in your research, please cite this repository:
-
-- Conrad R. (2025). Breakwright. GitHub repository. Available at: https://github.com/rotheconrad/Breakwright
-
-And the underlying tools:
-
-- Li, H. (2021). *Minimap2: pairwise alignment for nucleotide sequences.*  
-- Kolmogorov et al. (2020). *Assembly of long, error-free reads using HiFi data.*
-- BBMap, MUMmer, Samtools, and associated utilities.
-- TO DO - complete ref list.
-
----
-
-## 📂 Directory Layout
-
-```
-project/
-├── ref/
-│   └── Gmax_Wm82_ref.fna
-├── assembly/
-│   └── assembly.bp.p_ctg.fa
-├── filtered/
-│   ├── assembly.kept.fa
-│   ├── assembly.decision.tsv
-│   └── assembly.kept_coverage.bed
-├── breaks/
-│   ├── assembly_breaks.tsv
-│   └── assembly_breaks_summary.tsv
-├── break_viz/
-│   ├── contigX_break1.pdf
-│   └── contigX_break1.png
-└── final/
-    └── assembly.corrected.fa
-```
+> Conrad & collaborators, Breakwright (in prep). A practical framework for identifying and validating misassemblies in long-read HiFiASM genomes.
