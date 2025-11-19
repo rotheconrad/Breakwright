@@ -1,4 +1,8 @@
+# ❗🔴❗ THIS PROJECT IS UNFINISHED AND UNDER ACTIVE DEVELOPMENT ❗🔴❗
+
 ![Breakwright Logo](images/breakwright_logo.png)
+
+# ❗🔴❗ THIS PROJECT IS UNFINISHED AND UNDER ACTIVE DEVELOPMENT ❗🔴❗
 
 # BREAKWRIGHT: Precision-crafted genome correction.
 
