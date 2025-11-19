@@ -548,3 +548,99 @@ From here you can:
 If you use Breakwright in a publication, please cite:
 
 > Conrad & collaborators, Breakwright (in prep). A practical framework for identifying and validating misassemblies in long-read HiFiASM genomes.
+
+---
+
+# What about the lowQ.bed?
+
+Great question — here’s exactly how the **optional `lowQ.bed`** information appears in both **the visualization** and the **augmented TSV output** in `breakwright_viz_plus.py`.
+
+---
+
+## 1️⃣ Where `lowQ.bed` comes from
+
+HiFiASM produces a `*.lowQ.bed` file that marks **intervals in the assembly where alignment overlap evidence was weak** during graph construction. These intervals often coincide with **repeat joins, collapsed segments, chimera points, or phase switches** — so they're extremely useful when reviewing break candidates.
+
+When you provide:
+
+```
+--lowq_bed asm.lowQ.bed
+```
+
+Breakwright adds lowQ context to each break.
+
+---
+
+## 2️⃣ How lowQ shows up in the **output TSV**
+
+Three columns are added:
+
+| column name        | meaning                                                                           |
+| ------------------ | --------------------------------------------------------------------------------- |
+| **`lowq_overlap`** | `"yes"` if *any* lowQ interval overlaps the visualization window around the break |
+| **`lowq_at_cut`**  | `"yes"` if the cut position falls *inside* a lowQ interval                        |
+| **`lowq_support`** | numeric — `1` if `lowq_at_cut == "yes"`, else `0`                                 |
+
+And **`lowq_support` contributes directly to the total support score**:
+
+```
+support_score_total = gfa_support_score + read_support_score + lowq_support
+```
+
+So if a breakpoint sits **right on top of a lowQ segment**, it automatically gets +1 confidence.
+
+---
+
+## 3️⃣ How lowQ shows up in the **panel visualization**
+
+LowQ signals do **not draw a separate colored track** on the plot (it’s already busy enough).
+Instead, it appears in the **annotation box** beside the read panel.
+
+Example annotation text might look like:
+
+```
+reason:large_qgap,strand_flip
+cov:low_cov_trough
+S:4 (G:2,R:1,Q:1)
+reads:cross=12,strict=4
+ref_span:reads_span_diff_chr (diff=3,far=0,local=1,unmap=0)
+QC:
+```
+
+The **`Q:1`** means `lowq_support = 1`.
+
+If there is overlap but the cut is not inside lowQ, you might see:
+
+```
+lowq_overlap: yes   lowq_at_cut: no
+```
+
+in the TSV, but **`Q:0`** in the support score.
+
+---
+
+## 4️⃣ When lowQ information is most helpful
+
+LowQ strongly reinforces a break when:
+
+| Read & coverage evidence         | lowQ annotation   | Interpretation                                          |
+| -------------------------------- | ----------------- | ------------------------------------------------------- |
+| weak or conflicting read support | lowQ_at_cut = yes | Probably a misassembly                                  |
+| strong spanning read support     | lowQ_at_cut = yes | Could be a **biological repeat**, still investigate     |
+| weak/no coverage                 | lowQ_at_cut = yes | Could be **collapsed repeat** or **unassembled allele** |
+| great read support               | no lowQ signal    | Likely **not a misassembly**                            |
+
+Think of lowQ as **"structural self-doubt emitted by the assembler"** — if HiFiASM struggled at that exact coordinate, it raises the confidence when Breakwright also flags it.
+
+---
+
+## 5️⃣ TL;DR
+
+| Component            | Where lowQ shows up                                                    |
+| -------------------- | ---------------------------------------------------------------------- |
+| Output table         | `lowq_overlap`, `lowq_at_cut`, `lowq_support`, `support_score_total`   |
+| Break prioritization | `lowq_support` increases score                                         |
+| Visualization        | Not drawn as a separate track — appears in annotation summary as `Q:x` |
+| Interpretation       | If cut lands inside lowQ → strong evidence the join is fragile         |
+
+
